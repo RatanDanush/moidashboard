@@ -352,6 +352,8 @@ def fetch_finnhub(tickers: list) -> list:
     return []
 
 
+@st.cache_data(ttl=1800, show_spinner=False,
+               hash_funcs={dict: lambda d: len(d.get("all_clients", d))})
 def fetch_all_corporate_actions(registry: dict) -> tuple:
     """
     Returns (actions_list, signal_clients_set)

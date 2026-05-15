@@ -17,7 +17,8 @@ import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_API_KEY   = os.getenv("GROQ_API_KEY",   "")
+GROQ_API_KEY_2 = os.getenv("GROQ_API_KEY_2", "")   # overflow key — used after key 1 hits 100K tokens
 
 MODEL_FAST  = "llama-3.1-8b-instant"       # classification, noise filter
 MODEL_SMART = "llama-3.3-70b-versatile"    # web search, FX, briefing, deep dive
@@ -229,11 +230,28 @@ Rules:
 
 # ─── Groq helpers ────────────────────────────────────────────────────────────
 
+def _get_active_key() -> str:
+    """
+    Return the API key with remaining budget.
+    Key 1 handles first 100K tokens/day.
+    Key 2 handles the next 100K tokens/day.
+    Falls back to key 1 if key 2 is not set.
+    """
+    if not GROQ_API_KEY_2:
+        return GROQ_API_KEY
+    try:
+        from token_tracker import get_status
+        used = get_status().get("total_used", 0)
+        return GROQ_API_KEY if used < 100_000 else GROQ_API_KEY_2
+    except Exception:
+        return GROQ_API_KEY
+
 def _client():
-    if not GROQ_API_KEY:
-        raise ValueError("GROQ_API_KEY not set")
+    key = _get_active_key()
+    if not key:
+        raise ValueError("No GROQ_API_KEY set — add to Streamlit secrets")
     from groq import Groq
-    return Groq(api_key=GROQ_API_KEY)
+    return Groq(api_key=key)
 
 def _call(system: str, user: str,
           model=MODEL_SMART,
@@ -282,7 +300,7 @@ def batch_classify(headlines_tuple: tuple) -> list:
     Classify headlines AND apply INR filter, India-India skip, dividend filter.
     Returns list of classification dicts in same order as input.
     """
-    if not GROQ_API_KEY or not headlines_tuple:
+    if not (GROQ_API_KEY or GROQ_API_KEY_2) or not headlines_tuple:
         return [_fallback_classify(h) for h, _ in headlines_tuple]
 
     headlines = list(headlines_tuple)

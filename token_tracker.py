@@ -1,15 +1,19 @@
 """
 token_tracker.py
 ----------------
-Tracks daily Groq token consumption against a 100,000 token/day budget.
+Tracks daily Groq token consumption across two API keys (200,000 tokens/day total).
 
-Budget allocation (updated — briefing removed):
-  Web search:      79,000  (signal-triggered + tier fill — ~65 clients/day)
-  Classification:   8,000  (8b model, ~50 tokens/item, ~160 headlines/day)
-  FX implications:  8,000  (70b model, ~250 tokens/call, ~32 cards/day)
-  Deep dive:        5,000  (manual only — on-demand client history)
-  ─────────────────────
-  Total:          100,000
+Key routing: Key 1 handles first 100K tokens, Key 2 handles next 100K.
+Both keys share this single budget file — total pool is 200K.
+
+Budget allocation:
+  Web search:      130,000  (~105 clients/day at ~1,200 tokens each)
+  Classification:   40,000  (~800 headlines/day at ~50 tokens each)
+  FX implications:  16,000  (~64 cards/day at ~250 tokens each)
+  Deep dive:        10,000  (manual only — on-demand client history)
+  Buffer:            4,000
+  ─────────────────────────
+  Total:           200,000
 
 Resets at midnight UTC (= 5:30am IST).
 Stored in token_budget.json on disk.
@@ -20,14 +24,14 @@ import os
 import datetime
 
 BUDGET_FILE  = "token_budget.json"
-DAILY_BUDGET = 100_000
+DAILY_BUDGET = 200_000   # 2 keys × 100K tokens each
 
-# Per-function allocations
+# Per-function allocations (proportionally doubled from single-key)
 ALLOCATIONS = {
-    "web_search":    65_000,   # Groq compound-beta-mini web search per client
-    "classify":      20_000,   # was 8k — active search now returns ~500-800 items
-    "fx_implication": 8_000,
-    "deep_dive":      5_000,
+    "web_search":     130_000,
+    "classify":        40_000,
+    "fx_implication":  16_000,
+    "deep_dive":       10_000,
 }
 
 
@@ -135,6 +139,7 @@ def get_status() -> dict:
         "hours_until_reset":  round(hours_left, 1),
         "ist_reset":          ist_reset,
         "date":               data.get("date",""),
+        "active_key":         "KEY_1" if total_used < 100_000 else "KEY_2",
         "at_limit":           total_used >= DAILY_BUDGET * 0.95,
         "web_search_full":    data["by_function"].get("web_search",0) >= ALLOCATIONS["web_search"] * 0.95,
     }
