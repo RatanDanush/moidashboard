@@ -22,7 +22,7 @@ Functions:
   5. deep_dive_search()        — 2.5 Flash 12-month grounded history
 """
 
-import os, re, json, requests
+import os, re, json, time, requests
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -395,6 +395,7 @@ def web_search_client_lite(rec: dict) -> list:
 
 # ─── 1c. Batch classifier (Gemini 3.1 Flash Lite — replaces Groq batch_classify) ──
 
+@st.cache_data(ttl=1800)   # cache 30 min — prevents 15 parallel sessions all firing 90 calls simultaneously
 def gemini_classify(headlines_tuple: tuple) -> list:
     """
     Classify headlines using Gemini 3.1 Flash Lite.
@@ -405,13 +406,17 @@ def gemini_classify(headlines_tuple: tuple) -> list:
 
     Uses GEMINI_MODEL_LITE (500 RPD / 15 RPM) — no Groq token budget consumed.
     No Google Search grounding needed — pure classification task.
+
+    NOTE: Called only as FALLBACK from corporate_fetcher when Groq is unavailable.
+    Groq llama-3.1-8b is the primary classifier — it has no RPM limit concern and
+    leaves Gemini's full 15 RPM budget for grounded web search.
     """
     if not GEMINI_API_KEY or not headlines_tuple:
         return [_classify_fallback(h) for h, _ in headlines_tuple]
 
     headlines = list(headlines_tuple)
     results   = []
-    chunk_size = 8    # Lite model handles larger batches accurately
+    chunk_size = 8
 
     for i in range(0, len(headlines), chunk_size):
         chunk    = headlines[i:i + chunk_size]
@@ -437,6 +442,9 @@ def gemini_classify(headlines_tuple: tuple) -> list:
         except Exception as ex:
             print(f"  Gemini classify error chunk {i}: {ex}")
             results.extend([_classify_fallback(h) for h, _ in chunk])
+
+        if i + chunk_size < len(headlines):
+            time.sleep(5)   # 15 RPM → 4s min; 5s keeps burst rate well under limit
 
     return results
 
