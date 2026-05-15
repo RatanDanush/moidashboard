@@ -1,0 +1,11 @@
+streamlit
+feedparser
+requests
+yfinance
+groq
+python-dotenv
+pandas
+openpyxl
+streamlit-autorefresh
+google-generativeai
+numpy
