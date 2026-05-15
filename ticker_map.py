@@ -22,27 +22,18 @@ TICKER_MAP = {
 
     # $400M–$800M
     "Blue Dart Express":                    "BLUEDART",
-    "GE Power India":                       "GEPIL",
-    "GE T&D India":                         "GETD",
-    "VE Commercial Vehicles":               "VECV",
     "Heidelberg Materials India":           "HEIDELBERG",
 
-    # $280M–$450M
-    "Otis Elevator Company India":          "OTIS",
-    "Clariant Chemicals India":             "CLNINDIA",
-    "Ingersoll-Rand India":                 "INGERRAND",
+    # $280M–$450M — confirmed NSE-listed
     "Merck Life Science":                   "MERCK",
     "Merck India":                          "MERCK",
+    "Ingersoll-Rand India":                 "INGERRAND",  # confirmed listed
 
     # $75M–$180M
-    "DIC India Ltd":                        "DICINDIA",
-    "Wartsila India":                       "WRTSL",
-    "Alstom India Ltd":                     "ALSTOMIND",
-    "Sharp India Ltd":                      "SHARPIN",
-    "Lotte India Corporation":              "LOTTEIND",
     "Asahi India Glass":                    "ASAHIINDIA",
     "Sembcorp Energy India":                "SEIL",
-    "Gland Pharma":                         "GLANDPHARMA",
+    "Gland Pharma":                         "GLANDPHARMA",  # confirmed NSE ticker
+    "Alfa Laval India Ltd":                 "ALFALAVAL",    # confirmed listed (transient yfinance error)
     "ICRA Ltd":                             "ICRA",
     "Maruti Suzuki India Ltd":              "MARUTI",
     "Hindustan Unilever Ltd":               "HINDUNILVR",
@@ -58,7 +49,6 @@ TICKER_MAP = {
     "Castrol India Ltd":                    "CASTROLIND",
     "Pfizer Ltd":                           "PFIZER",
     "Bata India Ltd":                       "BATAINDIA",
-    "Reckitt Benckiser India Ltd":          "RECKITTBEN",
     "Bayer CropScience Ltd":                "BAYERCROP",
     "BASF India Ltd":                       "BASF",
     "Procter & Gamble Hygiene":             "PGHH",

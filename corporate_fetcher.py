@@ -12,6 +12,7 @@ Sources (in priority order):
 """
 
 import os, re, json, datetime, requests, feedparser
+import streamlit as st
 import yfinance as yf
 from dotenv import load_dotenv
 
@@ -20,7 +21,7 @@ load_dotenv()
 FINNHUB_KEY    = os.getenv("FINNHUB_API_KEY", "")
 FMP_KEY        = os.getenv("FMP_API_KEY", "")
 LOOKBACK_DAYS  = 30
-LOOKAHEAD_DAYS = 60   # widened: catches ex-dates announced 4-6 weeks out (board → ex-date gap)
+LOOKAHEAD_DAYS = 30
 
 # ─── Date helpers ─────────────────────────────────────────────────────────────
 
@@ -169,8 +170,13 @@ def fetch_nse(known_tickers: set) -> list:
 
 # ─── SOURCE 2: yfinance ───────────────────────────────────────────────────────
 
-
-def fetch_yfinance(tickers: list) -> list:
+@st.cache_data(ttl=3600)   # cache 1 hour — prevents repeated calls on each Streamlit re-run
+def fetch_yfinance(tickers: tuple) -> list:
+    """
+    Fetch dividend + split history for all NSE-listed tickers.
+    Takes a tuple (not list) so st.cache_data can hash the argument.
+    Called from fetch_all_corporate_actions as: fetch_yfinance(tuple(all_tickers))
+    """
     out, n = [], 0
     wide_from = _today() - datetime.timedelta(days=730)  # 2 years
 
@@ -363,7 +369,7 @@ def fetch_all_corporate_actions(registry: dict) -> tuple:
 
     # Structured sources
     raw  = fetch_nse(set(all_tickers))
-    raw += fetch_yfinance(all_tickers)
+    raw += fetch_yfinance(tuple(all_tickers))
     raw += fetch_fmp(all_tickers)
     raw += fetch_india_news(registry)
 
@@ -408,58 +414,43 @@ def fetch_all_corporate_actions(registry: dict) -> tuple:
     raw     = [a for a in raw if pre_filter(a.get("headline",""))]
     print(f"  Pre-filter removed {pre_len - len(raw)} noise items")
 
-    # Step 3: Classify — Gemini 3.1 Flash Lite first, Groq as fallback
+    # Step 3: Groq classifier
     to_classify = [(i, a) for i, a in enumerate(raw)
                    if any(s in a.get("source","") for s in
-                          ["Google News","News —","Groq web","Gemini web",
-                           "Moneycontrol","Economic","Business Standard","Mint"])]
+                          ["Google News","News —","Groq web","Moneycontrol",
+                           "Economic","Business Standard","Mint"])]
     if to_classify:
-        hl_tuple = tuple(
-            (a["headline"], a.get("raw_detail","")[:120])
-            for _, a in to_classify
-        )
-        clfs = None
-
-        # Try Gemini 3.1 Flash Lite (500 RPD — no token budget constraint)
         try:
-            from gemini_engine import gemini_classify, GEMINI_API_KEY
-            if GEMINI_API_KEY:
-                print(f"  Gemini classifying {len(to_classify)} news items...")
-                clfs = gemini_classify(hl_tuple)
+            from groq_engine import batch_classify, GROQ_API_KEY
+            from token_tracker import can_afford
+            if GROQ_API_KEY and can_afford("classify", 500):
+                print(f"  Groq classifying {len(to_classify)} news items...")
+                hl_tuple = tuple(
+                    (a["headline"], a.get("raw_detail","")[:120])
+                    for _, a in to_classify
+                )
+                clfs = batch_classify(hl_tuple)
+                for (idx, action), clf in zip(to_classify, clfs):
+                    raw[idx]["_groq_confidence"]    = clf.get("confidence","medium")
+                    raw[idx]["_groq_significant"]   = clf.get("is_significant", True)
+                    raw[idx]["_inr_involved"]       = clf.get("inr_involved", True)
+                    raw[idx]["_skip_india_india"]   = clf.get("skip_india_india", False)
+                    raw[idx]["_indian_sub_div"]     = clf.get("is_indian_subsidiary_dividend", True)
+                    raw[idx]["_is_primary_subject"] = clf.get("is_primary_subject", True)
+                    raw[idx]["_sebi_open_offer"]    = clf.get("sebi_open_offer_trigger", False)
+                    ev_date = clf.get("event_date")
+                    if ev_date:
+                        raw[idx]["_event_date"] = str(ev_date)[:10]
+                    if clf.get("confidence") in ("high","medium"):
+                        raw[idx]["action_type"] = clf.get("action_type", action["action_type"])
+                        raw[idx]["foreign_entity"] = (clf.get("foreign_entity") or action.get("foreign_entity"))
+                        if clf.get("deal_value_usd_m"):
+                            raw[idx]["amount"]   = clf["deal_value_usd_m"]
+                            raw[idx]["currency"] = "USD"
+            else:
+                print("  Groq classify: budget insufficient, using keyword fallback")
         except Exception as ex:
-            print(f"  Gemini classify unavailable, falling back to Groq: {ex}")
-
-        # Fallback: Groq batch_classify (token-budget constrained)
-        if clfs is None:
-            try:
-                from groq_engine import batch_classify, GROQ_API_KEY
-                from token_tracker import can_afford
-                if GROQ_API_KEY and can_afford("classify", 500):
-                    print(f"  Groq classifying {len(to_classify)} news items (fallback)...")
-                    clfs = batch_classify(hl_tuple)
-                else:
-                    print("  Classify: both Gemini and Groq unavailable — using keyword fallback")
-            except Exception as ex:
-                print(f"  Groq classify error: {ex}")
-
-        if clfs:
-            for (idx, action), clf in zip(to_classify, clfs):
-                raw[idx]["_groq_confidence"]    = clf.get("confidence","medium")
-                raw[idx]["_groq_significant"]   = clf.get("is_significant", True)
-                raw[idx]["_inr_involved"]       = clf.get("inr_involved", True)
-                raw[idx]["_skip_india_india"]   = clf.get("skip_india_india", False)
-                raw[idx]["_indian_sub_div"]     = clf.get("is_indian_subsidiary_dividend", True)
-                raw[idx]["_is_primary_subject"] = clf.get("is_primary_subject", True)
-                raw[idx]["_sebi_open_offer"]    = clf.get("sebi_open_offer_trigger", False)
-                ev_date = clf.get("event_date")
-                if ev_date:
-                    raw[idx]["_event_date"] = str(ev_date)[:10]
-                if clf.get("confidence") in ("high","medium"):
-                    raw[idx]["action_type"] = clf.get("action_type", action["action_type"])
-                    raw[idx]["foreign_entity"] = (clf.get("foreign_entity") or action.get("foreign_entity"))
-                    if clf.get("deal_value_usd_m"):
-                        raw[idx]["amount"]   = clf["deal_value_usd_m"]
-                        raw[idx]["currency"] = "USD"
+            print(f"  Groq classifier error: {ex}")
 
     # Step 4: Apply filters
     from filters import (pre_filter, WEB_SEARCH_TRIGGER_TYPES,

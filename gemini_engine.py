@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL     = "gemini-2.5-flash-preview-05-20"   # 5 RPM / 20 RPD  — high quality
+GEMINI_MODEL     = "gemini-2.5-flash"                  # 5 RPM / 20 RPD  — GA model (replaces preview-05-20)
 GEMINI_MODEL_LITE = "gemini-3.1-flash-lite"            # 15 RPM / 500 RPD — high throughput
 _BASE_URL        = "https://generativelanguage.googleapis.com/v1beta/models"
 

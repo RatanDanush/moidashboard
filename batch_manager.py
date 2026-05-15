@@ -12,7 +12,7 @@ Priority order:
 
 Model routing (respects free-tier RPD limits):
   Heavy (P1 + top Tier 1, max 20/day) → gemini-2.5-flash  (20 RPD / 5 RPM / 12s sleep)
-  Lite  (P2 remainder + P3 + P4)      → gemini-3.1-flash-lite (500 RPD / 15 RPM / 4s sleep)
+  Lite  (P2 remainder + P3 + P4)      → gemini-3.1-flash-lite (500 RPD / 15 RPM / 6s sleep)
 
 Daily capacity: 20 high-quality + 480 lite = true 390-client coverage.
 """
@@ -21,7 +21,7 @@ import json, os, datetime, time
 import streamlit as st
 
 CACHE_FILE          = "web_search_cache.json"
-BATCH_COOLDOWN_MINS = 0.5   # 30 seconds between batches
+BATCH_COOLDOWN_MINS = 30   # matches 30-min autorefresh — prevents parallel runs from multiple sessions
 
 
 # ─── Cache I/O ────────────────────────────────────────────────────────────────
@@ -133,8 +133,8 @@ def run_next_batch(registry: dict,
     Runs after main feed loads — non-blocking background intelligence pass.
 
     Two-model routing:
-      Heavy (≤20 calls/day) → gemini-2.5-flash,      12s sleep
-      Lite  (≤500 calls/day) → gemini-3.1-flash-lite,  4s sleep
+      Heavy (≤20 calls/day) → gemini-2.5-flash,       12s sleep
+      Lite  (≤500 calls/day) → gemini-3.1-flash-lite,   6s sleep
     """
     from gemini_engine import (web_search_client, web_search_client_lite,
                                GEMINI_API_KEY)
@@ -189,7 +189,7 @@ def run_next_batch(registry: dict,
             print(f"    ✗[2.5F] {sub[:32]} — {err[:50]}")
             cache = mark_searched(cache, rec, [])
 
-    # ── Lite pass — Gemini 3.1 Flash Lite, 4s sleep (15 RPM / 500 RPD) ──────
+    # ── Lite pass — Gemini 3.1 Flash Lite, 6s sleep (15 RPM / 500 RPD) ──────
     for rec in lite_queue:
         sub = rec.get("indian_subsidiary", "")
         try:
@@ -197,7 +197,7 @@ def run_next_batch(registry: dict,
             cache  = mark_searched(cache, rec, events)
             print(f"    ✓[3.1L] {sub[:32]:<32} {len(events)} events")
             searched += 1
-            time.sleep(4)
+            time.sleep(6)   # 15 RPM → 4s min; 6s gives margin for multi-session safety
         except Exception as ex:
             err = str(ex)
             if "rate limit" in err.lower():
