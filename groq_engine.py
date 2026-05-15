@@ -152,6 +152,51 @@ confidence = "low" for any item that is:
   - About a company only tangentially related to the matched client
   - Pure market commentary with no corporate action
 
+═══ FILTER 8: PRIMARY GEOGRAPHY CHECK ═══
+If the article's PRIMARY subject or geography is non-India, mark inr_involved = FALSE
+and is_primary_subject = FALSE regardless of the matched Indian subsidiary.
+
+CRITICAL NEGATIVE EXAMPLES — all should be inr_involved = FALSE:
+  ❌ "Carlsberg Malaysia Returns 90% of Profit to Shareholders" → Malaysia entity, NOT India
+  ❌ "Volvo Cars open to US partnerships, says CEO" → US strategy, not India ops
+  ❌ "VW's US Scout brand considers listing" → US brand, not Skoda India
+  ❌ "SpaceX's blockbuster IPO is coming. Linde will be a big winner" → SpaceX IPO, Linde India not involved
+  ❌ "Japanese stocks pull back from record highs" → Japan macro, not corporate action
+  ❌ "Sumitomo Corporation sells Madagascar mine stake" → Africa geography, no INR
+  ❌ "Ingersoll Rand (NYSE: IR) Q1 Results and Buybacks" → US listed parent, not India subsidiary
+  ❌ "OpenAI acquires Tomoro consulting firm" → No India connection even if client is Tesco/tech co
+  ❌ "India's car boom: Global OEMs race to invest" → Sector overview, NO specific company as primary
+  ❌ "7,800 crore FDI flows into MP in two years" → State statistics, specific company NOT mentioned
+  ❌ "GoI announces the sale of two dated securities for ₹32,000 crore" → Government bond auction
+  ❌ "Anthropic in talks to raise $30 billion" → US fundraise; Amazon/investor is not primary subject
+  ❌ "Ford stock surges 13% on investor optimism" → US stock price movement
+
+RULE: If connecting the article to India INR flows requires multiple logical steps, mark inr_involved = FALSE.
+
+═══ FILTER 9: NON-CORPORATE EVENTS ═══
+action_type = "Other", is_significant = false, inr_involved = false for:
+  - Court cases, criminal proceedings: "court acquits", "bail granted", "pedestrian death case"
+  - Sports / entertainment: "cricket", "BBL", "IPL match", "fires back at rumours", "Big Bash"
+  - Government bond operations: "dated securities", "G-sec auction", "treasury bills"
+  - Personal finance articles: "PPF extension", "fixed deposit maturity", "mutual fund SIP"
+  - HR / personnel: executive appointments, resignations, board member changes
+  - Awards, CSR, operational milestones with no capital flow
+
+═══ FILTER 10: ENTITY VERIFICATION ═══
+is_primary_subject = false if the headline's named company ≠ the matched Indian subsidiary.
+
+KNOWN CONFUSIONS — always check:
+  • "Eicher Trucks" or "VECV" = Volvo-Eicher JV → NOT Daimler
+  • "United Breweries" = Heineken entity → NOT Carlsberg
+  • "Volvo Cars" ≠ "VE Commercial Vehicles" (Volvo Trucks/Group India JV)
+  • "Plastiblends India" = Kolsite Group → NOT Clariant
+  • "Neopolis Brands" = Indian startup → NOT Brandix
+  • "Bagmane REIT" = Bagmane Group → NOT Brookfield
+  • Person name "Cummins" (cricketer Pat Cummins) ≠ "Cummins Group" (engine manufacturer)
+  • "Tesco" matched client ≠ primary subject if article is about OpenAI, Microsoft, etc.
+
+RULE: If headline's company name does not match the Indian subsidiary, set is_primary_subject = false.
+
 Return ONLY a valid JSON array of objects, one per headline. No other text."""
 
 NOISE_FILTER_SYSTEM = """You are a strict relevance filter for Standard Chartered Bank India FX desk.

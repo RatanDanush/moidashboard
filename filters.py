@@ -26,25 +26,29 @@ MARKET_COMMENTARY_PHRASES = [
     "how india's biggest ipos", "biggest ipos performing",
     "stock falls", "stock rises", "shares fall", "shares rise",
     "shares tumble", "shares surge", "shares drop",
+    "stock surges", "stock jumps", "shares jump",
+    "hits 52-week", "52-week high", "52-week low", "all-time high",
     # General market commentary
     "wall street gains", "wall street falls", "market roundup",
     "weekly wrap", "market wrap", "earnings beat", "earnings miss",
     "revenue miss", "quarterly results", "q1 results", "q2 results",
     "q3 results", "q4 results", "annual results",
+    "stocks pull back", "markets pull back", "stocks retreat",
+    "japanese stocks", "us stocks", "asian stocks", "global stocks",
     # Technical analysis
     "support level", "resistance level", "rsi", "moving average",
-    "52-week high", "52-week low", "market cap",
-    # ── Stock pick / investment list articles (Issue 5 — Honeywell) ──────────
+    "market cap",
+    # ── Stock pick / investment list articles ──────────────────────────────────
     "stocks to invest", "stocks to buy", "stocks to watch",
     "high-priced stocks", "best stocks", "top stocks",
     "stocks in india in", "stocks for", "stocks to consider",
     "shares to buy", "shares to watch",
-    # ── Smart investing / retail investor content (Issue 8) ──────────────────
+    # ── Smart investing / retail investor content ──────────────────────────────
     "what you need to know for smart investing",
     "smart investing", "stock: what you need to know",
     "invest in india in april", "invest in india in",
     "investing now", "for smart investing",
-    # ── Executive appointments / HR news — NOT capital flows ─────────────────
+    # ── Executive appointments / HR news ──────────────────────────────────────
     "extends tenure", "extend his tenure", "extend her tenure",
     "cfo extends", "ceo extends", "md extends", "director extends",
     "appoints cfo", "appoints ceo", "appoints md", "names new cfo",
@@ -57,6 +61,28 @@ MARKET_COMMENTARY_PHRASES = [
     "new plans rolled out", "plan prices", "price hike on plans",
     "service tariff", "prepaid plans", "postpaid plans",
     "broadband prices", "data plan",
+    # ── Legal / court cases (Bug #9) ──────────────────────────────────────────
+    "court acquits", "court convicts", "court dismisses",
+    "bail granted", "arrested for", "death case",
+    "criminal case", "criminal charges", "filed fir",
+    "pedestrian death", "hit and run",
+    # ── Sports / entertainment name collisions (Bug #25) ──────────────────────
+    "big bash", "bbl ", "test cricket", "ipl match",
+    "cricket match", "odi cricket", "t20 cricket",
+    "fires back at rumours", "fires back at reports",
+    "fires back at claims",
+    # ── Government bonds / macro stats — not corporate actions (Bug #26) ──────
+    "dated securities", "government securities sale",
+    "g-sec auction", "treasury bills auction", "gsec auction",
+    "sale of two dated", "notified amount of",
+    # ── State / macro FDI statistics (Bug #23) ────────────────────────────────
+    "fdi flows into", "fdi inflows into", "fdi received by",
+    "fdi in the state", "crore fdi flows",
+    # ── Personal finance articles (Bug #5) ────────────────────────────────────
+    "ppf extension", "ppf withdrawal", "ppf account maturity",
+    "public provident fund", "fixed deposit maturity",
+    "mutual fund sip", "what should investors choose",
+    "account maturity", "phased withdrawals",
 ]
 
 # ─── Aggregator / list articles ───────────────────────────────────────────────
@@ -65,6 +91,14 @@ AGGREGATOR_PHRASES = [
     "tracxn", "crunchbase", "cb insights",
     "deal tracker", "m&a tracker", "acquisition tracker",
     "funding rounds", "latest funding",
+    # ── ET / news site tag / aggregator pages (Bug #1, #29) ───────────────────
+    "latest news & videos", "latest news and videos",
+    "photos about", "news videos photos",
+    "latest news, videos", "videos, photos about",
+    # ── Market research databases (Bug #29) ───────────────────────────────────
+    "indexbox", "news and statistics -", "- news and statistics",
+    "market research report", "industry report",
+    "- statista", "mordor intelligence", "grand view research",
 ]
 
 # ─── Secondary reference patterns ────────────────────────────────────────────
@@ -229,14 +263,18 @@ NON_INDIA_GEOS = [
     "in thailand", "in malaysia", "in saudi arabia", "in the uae", "in dubai",
     "in the netherlands", "in netherlands", "in belgium", "in spain",
     "in italy", "in poland", "in sweden", "in norway", "in finland",
+    "in madagascar", "in africa", "in sri lanka", "in myanmar",
+    "in singapore", "in hong kong", "in taiwan",
     # bare country names (safe because INVESTMENT_KEYWORDS guard is required)
     "netherlands", "germany", "france", "united states", "united kingdom",
     "australia", "canada", "brazil", "south korea", "saudi arabia",
+    "malaysia", "madagascar", "sri lanka",
     # adjective forms
     "european facility", "european plant", "european factory",
     "french facility", "french plant", "french factory",
     "german facility", "german plant", "german factory", "germany factory",
     "american facility", "american plant",
+    "malaysian ", "madagascar ",
 ]
 
 INVESTMENT_KEYWORDS = [

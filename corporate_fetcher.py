@@ -70,16 +70,94 @@ def classify(text: str) -> str:
 def _company(title: str) -> str:
     return re.split(r"[-:|/]", title)[0].strip()[:80]
 
+import html as _html
+
+def _sanitize_headline(text: str) -> str:
+    """Strip HTML tags and unescape entities from headlines (Bug #22)."""
+    text = _html.unescape(text or "")
+    text = re.sub(r'<[^>]+>', '', text)   # strip <span>, <b>, etc.
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
 def _amount(text: str):
-    for pat in [r"rs\.?\s*([\d,]+(?:\.\d+)?)\s*per\s+share",
-                r"([\d,]+(?:\.\d+)?)\s*per\s+share",
-                r"dividend\s+of\s+rs\.?\s*([\d,]+(?:\.\d+)?)",
-                r"₹\s*([\d,]+(?:\.\d+)?)",
-                r"inr\s*([\d,]+(?:\.\d+)?)"]:
-        m = re.search(pat, text, re.IGNORECASE)
+    """
+    Unit-aware financial amount extraction.
+
+    Priority:
+      1. Explicit per-share patterns  (e.g. "₹22 per share", "Rs 21 dividend")
+         → rejected if value > 5,000  (avoids crore-scale numbers as /sh)
+      2. Deal values with unit multipliers:
+         • "$X billion / bn"  → X × 1,000 (stored as USD millions)
+         • "$X million / mn"  → X  (stored as USD millions)
+         • "₹X crore"         → X  (stored as INR crore, displayed separately)
+      3. Raw ₹ / INR amount only if ≤ 5,000
+
+    Fixes:
+      Bug #3  — "$1 billion" → 1000, not 1
+      Bug #3  — "$36 bn"     → 36000, not 36
+      Bug #4  — Hyundai profit ₹1,256 crore rejected as /sh (> 5,000 cap)
+      Bug #26 — ₹32,000 crore G-sec rejected as /sh (> 5,000 cap)
+      Bug #21 — ₹90 crore startup raise rejected as /sh (crore path instead)
+    """
+    h = text.lower()
+
+    # ── Tier 1: Explicit per-share / dividend amounts ──────────────────────────
+    PER_SHARE_PATS = [
+        r'rs\.?\s*([\d,]+(?:\.\d+)?)\s*(?:per\s+share|/\s*share|per\s+equity\s+share)',
+        r'([\d,]+(?:\.\d+)?)\s*(?:per\s+share|/\s*share)',
+        r'dividend\s+(?:of\s+)?(?:rs\.?\s*|₹\s*)([\d,]+(?:\.\d+)?)',
+        r'(?:rs\.?\s*|₹\s*)([\d,]+(?:\.\d+)?)\s*(?:dividend\b|per\s+share|/sh\b)',
+        r'₹\s*([\d,]+(?:\.\d+)?)\s*(?:per\s+share|/sh\b)',
+        r'inr\s*([\d,]+(?:\.\d+)?)\s*(?:per\s+share|/sh\b)',
+    ]
+    for pat in PER_SHARE_PATS:
+        m = re.search(pat, h, re.IGNORECASE)
         if m:
-            try: return float(m.group(1).replace(",", ""))
-            except: pass
+            try:
+                val = float(m.group(1).replace(",", ""))
+                if val <= 5_000:      # sanity cap: reject crore-scale as /sh
+                    return val
+            except Exception:
+                pass
+
+    # ── Tier 2: Deal values with unit multipliers ──────────────────────────────
+    DEAL_PATS = [
+        (r'\$\s*([\d,]+(?:\.\d+)?)\s*(?:trillion|tn\b)',                    1_000_000),
+        (r'\$\s*([\d,]+(?:\.\d+)?)\s*(?:billion|bn\b)',                     1_000),
+        (r'usd\s*([\d,]+(?:\.\d+)?)\s*(?:billion|bn\b)',                    1_000),
+        (r'([\d,]+(?:\.\d+)?)\s*(?:billion|bn\b)\s*(?:dollar|usd|\$)',      1_000),
+        (r'\$\s*([\d,]+(?:\.\d+)?)\s*(?:million|mn\b|m\b)',                 1),
+        (r'usd\s*([\d,]+(?:\.\d+)?)\s*(?:million|mn\b)',                    1),
+        (r'([\d,]+(?:\.\d+)?)\s*(?:million|mn\b)\s*(?:dollar|usd|\$)',      1),
+        # INR crore — returned as raw crore value (app.py handles display)
+        (r'(?:rs\.?\s*|₹\s*)([\d,]+(?:\.\d+)?)\s*(?:lakh\s+crore)',        10_000),
+        (r'([\d,]+(?:\.\d+)?)\s*(?:lakh\s+crore)',                          10_000),
+        (r'(?:rs\.?\s*|₹\s*)([\d,]+(?:\.\d+)?)\s*(?:crore|cr\b)',          None),
+        (r'([\d,]+(?:\.\d+)?)\s*(?:crore|cr\b)',                            None),
+    ]
+    for pat, multiplier in DEAL_PATS:
+        m = re.search(pat, h, re.IGNORECASE)
+        if m:
+            try:
+                val = float(m.group(1).replace(",", ""))
+                if multiplier is not None:
+                    return round(val * multiplier, 1)
+                else:
+                    return val   # crore returned as-is
+            except Exception:
+                pass
+
+    # ── Tier 3: Raw ₹ / INR — only if small (likely per-share) ───────────────
+    for pat in [r'₹\s*([\d,]+(?:\.\d+)?)', r'inr\s*([\d,]+(?:\.\d+)?)']:
+        m = re.search(pat, h, re.IGNORECASE)
+        if m:
+            try:
+                val = float(m.group(1).replace(",", ""))
+                if val <= 5_000:
+                    return val
+            except Exception:
+                pass
+
     return None
 
 def _ticker(text: str, known: set):
@@ -152,7 +230,7 @@ def fetch_nse(known_tickers: set) -> list:
                     "company_name":   _company(title),
                     "ticker":         _ticker(title, known_tickers),
                     "action_type":    classify(combined),
-                    "headline":       title[:200],
+                    "headline":       _sanitize_headline(title)[:200],
                     "date":           date_str,
                     "amount":         _amount(combined),
                     "currency":       "INR",
@@ -260,7 +338,7 @@ def fetch_fmp(tickers: list) -> list:
             if "india" not in (title + detail).lower(): continue
             out.append({
                 "company_name": _company(title), "ticker": None, "action_type": "M&A",
-                "headline": title[:200], "date": date, "amount": _amount(title + detail),
+                "headline": _sanitize_headline(title)[:200], "date": date, "amount": _amount(title + detail),
                 "currency": "USD", "source": "FMP M&A",
                 "raw_detail": detail[:300], "url": item.get("url", ""),
                 "foreign_entity": _foreign(title),
@@ -325,7 +403,7 @@ def fetch_india_news(registry: dict) -> list:
                     "company_name": _company(title),
                     "ticker":       matched["ticker"] if matched else None,
                     "action_type":  atype if atype != "Other" else "Strategic",
-                    "headline":     title[:200],
+                    "headline":     _sanitize_headline(title)[:200],
                     "date":         date_str,
                     "amount":       _amount(combined),
                     "currency":     "INR",
@@ -468,7 +546,11 @@ def fetch_all_corporate_actions(registry: dict) -> tuple:
                     raw[idx]["action_type"] = clf.get("action_type", action["action_type"])
                     raw[idx]["foreign_entity"] = (clf.get("foreign_entity") or
                                                   action.get("foreign_entity"))
-                    if clf.get("deal_value_usd_m"):
+                    # Only override amount for deal types — not Dividend/Buyback
+                    # (Groq extracts deal_value from articles which may be profit
+                    # figures, not per-share amounts. Bug #4, #26)
+                    if (clf.get("deal_value_usd_m") and
+                            raw[idx].get("action_type") not in ("Dividend", "Buyback")):
                         raw[idx]["amount"]   = clf["deal_value_usd_m"]
                         raw[idx]["currency"] = "USD"
 
