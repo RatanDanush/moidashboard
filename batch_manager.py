@@ -135,13 +135,22 @@ def run_next_batch(registry: dict,
     Two-model routing:
       Heavy (≤20 calls/day) → gemini-2.5-flash,       12s sleep
       Lite  (≤500 calls/day) → gemini-3.1-flash-lite,   6s sleep
+
+    Race condition protection:
+      Random jitter (0-10s) before cooldown check staggers simultaneous
+      session starts. Combined with session_state guard in app.py, prevents
+      multiple sessions from all passing should_run_batch() simultaneously.
     """
+    import random
     from gemini_engine import (web_search_client, web_search_client_lite,
                                GEMINI_API_KEY)
     from token_tracker import get_status
 
     if not GEMINI_API_KEY:
         return load_cache()
+
+    # Jitter: stagger simultaneous session starts so first writer wins
+    time.sleep(random.uniform(0, 10))
 
     cache = load_cache()
 

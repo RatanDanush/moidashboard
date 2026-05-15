@@ -731,25 +731,34 @@ with tab_live:
                 f"scb_{dt.now().strftime('%Y%m%d_%H%M')}.csv","text/csv")
 
     # ── Run batch AFTER feed is rendered ──────────────────────────────────────
-    batch_placeholder = st.empty()
-    with batch_placeholder.container():
-        batch_status = st.empty()
-        batch_status.markdown(
-            '<div style="font-size:11px;color:#263238;text-align:right;">'
-            'Running web search batch...</div>',
-            unsafe_allow_html=True)
-    try:
-        updated_cache = run_next_batch(registry, signal_clients=signal_clients)
-        new_prog      = get_progress(registry, updated_cache)
-        batch_status.markdown(
-            f'<div style="font-size:11px;color:#1b5e20;text-align:right;">'
-            f'✓ Batch complete · {new_prog["fresh_24h"]}/{new_prog["total"]} clients updated</div>',
-            unsafe_allow_html=True)
-    except Exception as ex:
-        batch_status.markdown(
-            f'<div style="font-size:11px;color:#37474f;text-align:right;">'
-            f'Batch skipped: {str(ex)[:40]}</div>',
-            unsafe_allow_html=True)
+    # Session state guard: each Streamlit session triggers batch at most ONCE.
+    # The file-based BATCH_COOLDOWN_MINS handles cross-session deduplication,
+    # but the race condition (all sessions read cache before any writes) means
+    # multiple sessions can pass the cooldown check simultaneously.
+    # This guard prevents re-triggering on every autorefresh within the session.
+    if st.session_state.get("_batch_done"):
+        pass   # already ran this session — skip silently
+    else:
+        st.session_state._batch_done = True
+        batch_placeholder = st.empty()
+        with batch_placeholder.container():
+            batch_status = st.empty()
+            batch_status.markdown(
+                '<div style="font-size:11px;color:#263238;text-align:right;">'
+                'Running web search batch...</div>',
+                unsafe_allow_html=True)
+        try:
+            updated_cache = run_next_batch(registry, signal_clients=signal_clients)
+            new_prog      = get_progress(registry, updated_cache)
+            batch_status.markdown(
+                f'<div style="font-size:11px;color:#1b5e20;text-align:right;">'
+                f'✓ Batch complete · {new_prog["fresh_24h"]}/{new_prog["total"]} clients updated</div>',
+                unsafe_allow_html=True)
+        except Exception as ex:
+            batch_status.markdown(
+                f'<div style="font-size:11px;color:#37474f;text-align:right;">'
+                f'Batch skipped: {str(ex)[:40]}</div>',
+                unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
