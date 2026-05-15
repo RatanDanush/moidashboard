@@ -25,15 +25,15 @@ TICKER_MAP = {
     "Heidelberg Materials India":           "HEIDELBERG",
 
     # $280M–$450M — confirmed NSE-listed
-    "Merck Life Science":                   "MERCK",
-    "Merck India":                          "MERCK",
+    "Merck Life Science":                   None,   # yfinance consistently fails — covered via RSS
+    "Merck India":                          None,   # yfinance consistently fails — covered via RSS
     "Ingersoll-Rand India":                 "INGERRAND",  # confirmed listed
 
     # $75M–$180M
     "Asahi India Glass":                    "ASAHIINDIA",
     "Sembcorp Energy India":                "SEIL",
-    "Gland Pharma":                         "GLANDPHARMA",  # confirmed NSE ticker
-    "Alfa Laval India Ltd":                 "ALFALAVAL",    # confirmed listed (transient yfinance error)
+    "Gland Pharma":                         None,   # yfinance no data — covered via RSS
+    "Alfa Laval India Ltd":                 None,   # yfinance no data — covered via RSS
     "ICRA Ltd":                             "ICRA",
     "Maruti Suzuki India Ltd":              "MARUTI",
     "Hindustan Unilever Ltd":               "HINDUNILVR",
@@ -68,7 +68,7 @@ TICKER_MAP = {
     "GlaxoSmithKline Pharmaceuticals":      "GLAXO",
     "Gillette India Ltd":                   "GILLETTE",
     "Colgate Palmolive India":              "COLPAL",
-    "Merck Ltd":                            "MERCK",
+    "Merck Ltd":                            None,   # yfinance no data
     "Pfizer Limited":                       "PFIZER",
     "AstraZeneca Pharma India":             "ASTRAZEN",
     "Vesuvius India":                       "VESUVIUS",
@@ -76,7 +76,7 @@ TICKER_MAP = {
     # ── Industrials / Engineering ──────────────────────────────────────────
     "Thermax Ltd":                          "THERMAX",
     "KSB Ltd":                              "KSB",
-    "Alfa Laval India Ltd":                 "ALFALAVAL",
+    "Alfa Laval India Ltd":                 None,   # yfinance no data
     "Ingersoll Rand India":                 "INGERRAND",
     "Elgi Equipments":                      "ELGIEQUIP",
     "Johnson Controls Hitachi":             "JCHAC",

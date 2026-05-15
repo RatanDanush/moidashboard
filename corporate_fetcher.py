@@ -441,7 +441,7 @@ def fetch_all_corporate_actions(registry: dict) -> tuple:
     from client_registry import match_by_name
     from filters import (pre_filter, WEB_SEARCH_TRIGGER_TYPES,
                          is_non_india_geography_investment, is_ipo_mismatch)
-    all_tickers = list(registry["by_ticker"].keys())
+    all_tickers = [t for t in registry["by_ticker"].keys() if t]  # skip None tickers
     print(f"\n{'='*60}")
     print(f"Fetching | window {_fmt(_from_dt())} → {_fmt(_to_dt())}")
     print(f"Tickers: {len(all_tickers)} total")

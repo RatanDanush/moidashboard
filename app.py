@@ -568,7 +568,7 @@ with tab_live:
             f'</div>',
             unsafe_allow_html=True)
     with _sb_btn:
-        if st.button("⟳ Refresh", use_container_width=True):
+        if st.button("⟳ Refresh", width="stretch"):
             st.cache_data.clear()
             st.rerun()
 
@@ -725,7 +725,7 @@ with tab_live:
                 "Link":     source_link(a),
             } for a in all_rows]
             df = pd.DataFrame(rows)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
             st.download_button("⬇️ CSV",
                 df.to_csv(index=False),
                 f"scb_{dt.now().strftime('%Y%m%d_%H%M')}.csv","text/csv")
@@ -778,7 +778,7 @@ with tab_dive:
     with dc1:
         sel_label = st.selectbox("Select client", [o[0] for o in options])
     with dc2:
-        run_btn = st.button("🔍 Search 12 months", use_container_width=True, type="primary")
+        run_btn = st.button("🔍 Search 12 months", width="stretch", type="primary")
 
     sel_rec = next((r for l,r in options if l==sel_label), None)
 

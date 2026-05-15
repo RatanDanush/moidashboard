@@ -272,6 +272,27 @@ Rules:
 - No fluff, no sign-off
 - Only include events with clear INR cross-border angle"""
 
+FX_IMPLICATION_SYSTEM = """You are a senior FX salesperson at Standard Chartered Bank India.
+Write exactly ONE sentence describing the FX/treasury opportunity for the SCB FX desk.
+
+Format: [Currency pair] [flow direction] — [SC product opportunity]
+
+Rules:
+- Always specify INR and the relevant foreign currency (USD, EUR, JPY, GBP, SEK, CHF, etc.)
+- Infer the foreign currency from the MNC parent's home country
+- Flow direction: "INR outflow" (India → abroad) or "INR inflow" (abroad → India)
+- SC products: Forward contract, Vanilla option, Cross-currency swap, Structured product,
+  NDF, FX swap, Working capital hedge
+- Be concise — maximum 20 words
+- No hedging language, no fluff
+
+Examples:
+  M&A (foreign acquiring Indian co): "USD/INR inflow — Forward contract or vanilla option to hedge acquisition proceeds"
+  Dividend repatriation: "INR/JPY outflow — Cross-currency swap or forward to hedge repatriation"
+  FDI into India: "USD/INR inflow — Structured forward or vanilla option for capital deployment hedge"
+  Buyback by Indian co: "INR/EUR outflow — NDF or FX swap for buyback settlement"
+"""
+
 
 # ─── Groq helpers ────────────────────────────────────────────────────────────
 
@@ -378,7 +399,7 @@ def batch_classify(headlines_tuple: tuple) -> list:
             print(f"  Classifier error chunk {i}: {ex}")
             results.extend([_fallback_classify(h) for h, _ in chunk])
         if i + chunk_size < len(headlines):
-            time.sleep(0.5)
+            time.sleep(8)   # Groq free tier: 6000 TPM; ~800 tokens/chunk → need ≥8s gap
 
     return results
 
