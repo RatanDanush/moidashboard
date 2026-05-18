@@ -150,8 +150,8 @@ def run_next_batch(registry: dict,
       multiple sessions from all passing should_run_batch() simultaneously.
     """
     import random
-    from gemini_engine import (web_search_client, web_search_client_lite,
-                               GEMINI_API_KEY)
+    from gemini_engine import (web_search_clients_batch, web_search_clients_batch_lite,
+                               _get_heavy_key, GEMINI_API_KEY)
     from token_tracker import get_status
 
     if not GEMINI_API_KEY:
@@ -175,33 +175,44 @@ def run_next_batch(registry: dict,
         print("  Batch: nothing to search")
         return cache
 
-    # ── Route: N×20 → 2.5 Flash (heavy), rest → 3.1 Flash Lite ─────────────
-    # HEAVY_LIMIT and sleep scale dynamically with available key count.
-    # Each key has 5 RPM; round-robin across N keys → effective N×5 RPM total.
-    # Sleep between heavy calls = max(4s, 12s ÷ N_keys) to stay within per-key RPM.
+    # ── Route: batch heavy → 2.5 Flash, batch lite → 3.1 Flash Lite ─────────
+    # Batching N clients per API call trades RPM for TPM:
+    #   Free tier: 5 RPM / 250K TPM → batching is always the right trade.
+    # BATCH_HEAVY=2: 20 RPD × 2 clients × n_keys = n_keys×40 clients/day (high quality)
+    # BATCH_LITE=3:  500 RPD × 3 clients × n_keys = n_keys×1500 clients/day (coverage)
     from gemini_engine import n_heavy_keys
+    BATCH_HEAVY = 2
+    BATCH_LITE  = 3
     _n_keys     = max(1, n_heavy_keys())
-    HEAVY_LIMIT = 20 * _n_keys
-    HEAVY_SLEEP = max(4, 12 // _n_keys)   # e.g. 3 keys → 4s; 2 keys → 6s; 1 key → 12s
+    HEAVY_LIMIT = 20 * _n_keys * BATCH_HEAVY   # clients (not calls) before switching to lite
+    HEAVY_SLEEP = max(4, 12 // _n_keys)        # per API call; round-robin keeps per-key RPM ≤ 5
+
     heavy_queue = queue[:HEAVY_LIMIT]
     lite_queue  = queue[HEAVY_LIMIT:]
 
     print(f"  Batch: {len(queue)} clients queued — "
-          f"{len(heavy_queue)} heavy (2.5 Flash ×{_n_keys}keys/{HEAVY_SLEEP}s) / "
-          f"{len(lite_queue)} lite (3.1 Flash Lite/6s) | "
+          f"{len(heavy_queue)} heavy (2.5 Flash ×{_n_keys}keys, {BATCH_HEAVY}/call, {HEAVY_SLEEP}s) / "
+          f"{len(lite_queue)} lite (3.1 Lite, {BATCH_LITE}/call, 6s) | "
           f"{len(signal_clients)} signal-triggered")
     cache = mark_batch_run(cache)
 
     searched = 0
 
-    # ── Heavy pass — Gemini 2.5 Flash, 12s sleep (5 RPM / 20 RPD) ───────────
-    for rec in heavy_queue:
-        sub = rec.get("indian_subsidiary", "")
+    # ── Heavy pass — 2 clients per call, round-robin across keys ─────────────
+    for i in range(0, len(heavy_queue), BATCH_HEAVY):
+        batch = heavy_queue[i:i + BATCH_HEAVY]
+        api_key, key_id = _get_heavy_key()
+        if not api_key:
+            print(f"  Batch: all heavy keys exhausted — switching to lite.")
+            save_cache(cache)
+            break
         try:
-            events = web_search_client(rec)
-            cache  = mark_searched(cache, rec, events)
-            print(f"    ✓[2.5F] {sub[:32]:<32} {len(events)} events")
-            searched += 1
+            all_events = web_search_clients_batch(batch, api_key=api_key, key_id=key_id)
+            for rec, events in zip(batch, all_events):
+                cache = mark_searched(cache, rec, events)
+                sub   = rec.get("indian_subsidiary", "")
+                print(f"    ✓[2.5F×{BATCH_HEAVY}] {sub[:30]:<30} {len(events)} events")
+                searched += 1
             time.sleep(HEAVY_SLEEP)
         except Exception as ex:
             err = str(ex)
@@ -209,26 +220,32 @@ def run_next_batch(registry: dict,
                 print(f"  Batch: 2.5 Flash rate limit — saving and switching to lite.")
                 save_cache(cache)
                 break
-            print(f"    ✗[2.5F] {sub[:32]} — {err[:50]}")
-            cache = mark_searched(cache, rec, [])
+            names = [r.get("indian_subsidiary","")[:15] for r in batch]
+            print(f"    ✗[2.5F×{BATCH_HEAVY}] {names} — {err[:50]}")
+            for rec in batch:
+                cache = mark_searched(cache, rec, [])
 
-    # ── Lite pass — Gemini 3.1 Flash Lite, 6s sleep (15 RPM / 500 RPD) ──────
-    for rec in lite_queue:
-        sub = rec.get("indian_subsidiary", "")
+    # ── Lite pass — 3 clients per call, round-robin across keys ──────────────
+    for i in range(0, len(lite_queue), BATCH_LITE):
+        batch = lite_queue[i:i + BATCH_LITE]
         try:
-            events = web_search_client_lite(rec)
-            cache  = mark_searched(cache, rec, events)
-            print(f"    ✓[3.1L] {sub[:32]:<32} {len(events)} events")
-            searched += 1
-            time.sleep(6)   # 15 RPM → 4s min; 6s gives margin for multi-session safety
+            all_events = web_search_clients_batch_lite(batch)
+            for rec, events in zip(batch, all_events):
+                cache = mark_searched(cache, rec, events)
+                sub   = rec.get("indian_subsidiary", "")
+                print(f"    ✓[3.1L×{BATCH_LITE}] {sub[:30]:<30} {len(events)} events")
+                searched += 1
+            time.sleep(6)
         except Exception as ex:
             err = str(ex)
             if "rate limit" in err.lower():
                 print(f"  Batch: Lite rate limit — pausing. {searched} done this cycle.")
                 save_cache(cache)
                 return cache
-            print(f"    ✗[3.1L] {sub[:32]} — {err[:50]}")
-            cache = mark_searched(cache, rec, [])
+            names = [r.get("indian_subsidiary","")[:15] for r in batch]
+            print(f"    ✗[3.1L×{BATCH_LITE}] {names} — {err[:50]}")
+            for rec in batch:
+                cache = mark_searched(cache, rec, [])
 
     save_cache(cache)
     print(f"  Batch complete: {searched} clients searched this cycle")

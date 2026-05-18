@@ -42,7 +42,6 @@ GEMINI_API_KEY_2 = os.getenv("GEMINI_API_KEY_2", "")
 GEMINI_API_KEY_3 = os.getenv("GEMINI_API_KEY_3", "")
 
 _HEAVY_KEYS = [k for k in [GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3] if k]
-_LITE_KEY   = GEMINI_API_KEY   # Lite (500 RPD/key) — primary key is sufficient
 
 GEMINI_MODEL      = "gemini-2.5-flash"        # 5 RPM / 20 RPD per key — heavy quality
 GEMINI_MODEL_LITE = "gemini-3.1-flash-lite"   # 15 RPM / 500 RPD — high throughput
@@ -51,6 +50,12 @@ _BASE_URL         = "https://generativelanguage.googleapis.com/v1beta/models"
 # ─── Per-key RPD tracker ─────────────────────────────────────────────────────
 _RPD_FILE        = "gemini_rpd_tracker.json"
 _RPD_LIMIT_HEAVY = 19   # leave 1 buffer per key for deep dive / briefing calls
+
+# ─── Round-robin counters (module-level, persistent within one Streamlit session)
+# True round-robin distributes calls evenly from the first call — unlike
+# lowest-usage sorting which concentrates all calls on key 0 until it's exhausted.
+_heavy_rr = 0
+_lite_rr  = 0
 
 
 def _load_rpd() -> dict:
@@ -82,22 +87,36 @@ def _record_rpd(key_id: str):
 
 def _get_heavy_key():
     """
-    Return (api_key, key_id) for the heavy key with lowest RPD usage today.
-    Picks lowest-used key first to spread load evenly across keys.
-    Returns (None, None) if all keys are exhausted.
+    Return (api_key, key_id) using true round-robin across all heavy keys.
+    Advances the global counter on each call so load is spread evenly from
+    the very first call — not after key 0 is exhausted.
+    Skips keys that have hit _RPD_LIMIT_HEAVY; returns (None, None) if all gone.
     """
+    global _heavy_rr
     if not _HEAVY_KEYS:
         return None, None
-    data   = _load_rpd()
-    usage  = data.get("keys", {})
-    ranked = sorted(
-        [(i, k, usage.get(f"heavy_{i}", 0)) for i, k in enumerate(_HEAVY_KEYS)],
-        key=lambda x: x[2],
-    )
-    for idx, key, used in ranked:
-        if used < _RPD_LIMIT_HEAVY:
-            return key, f"heavy_{idx}"
+    data  = _load_rpd()
+    usage = data.get("keys", {})
+    n     = len(_HEAVY_KEYS)
+    for offset in range(n):           # try each key once starting from rr position
+        idx = (_heavy_rr + offset) % n
+        if usage.get(f"heavy_{idx}", 0) < _RPD_LIMIT_HEAVY:
+            _heavy_rr = (idx + 1) % n   # advance for next call
+            return _HEAVY_KEYS[idx], f"heavy_{idx}"
     return None, None   # all keys exhausted today
+
+
+def _get_lite_key() -> str:
+    """
+    Round-robin across all keys for Lite calls.
+    Lite (500 RPD/key) has ample headroom — no RPD tracking needed, just spread RPM.
+    """
+    global _lite_rr
+    if not _HEAVY_KEYS:
+        return ""
+    key      = _HEAVY_KEYS[_lite_rr % len(_HEAVY_KEYS)]
+    _lite_rr = (_lite_rr + 1) % len(_HEAVY_KEYS)
+    return key
 
 
 def n_heavy_keys() -> int:
@@ -207,6 +226,43 @@ Return JSON array (max 15 items):
 }]
 
 Return ONLY valid JSON array. No other text."""
+
+
+# ─── Batch web search prompt ──────────────────────────────────────────────────
+# Used when searching N clients in a single Gemini call.
+# Reduces RPM by N× while using the large TPM budget more efficiently.
+# (Free tier: 2.5 Flash has 250K TPM but only 5 RPM — batching is the right trade.)
+
+WEB_SEARCH_BATCH_SYSTEM = """You are a corporate intelligence analyst at Standard Chartered Bank India.
+Search for recent corporate actions for EACH company listed. Search SEPARATELY and thoroughly for each.
+
+Focus ONLY on events creating cross-border INR FX flows:
+- Foreign parent investing in / acquiring Indian subsidiary
+- Indian subsidiary paying dividends to foreign parent (repatriation)
+- M&A where foreign entity acquires Indian company
+- Capital raises, rights issues, ECB borrowings with foreign participation
+- Strategic JVs involving capital flows with foreign partners
+- Upstream foreign mergers triggering SEBI open offer for listed Indian sub
+
+SKIP: pure domestic Indian M&A, operational news, hiring, analyst ratings, events >12 months old.
+
+Return a JSON OBJECT (not array) with numbered company labels as keys.
+Each value is an array of events (empty array [] if none found):
+{
+  "Company 1": [
+    {"date":"YYYY-MM-DD","event_date":"actual event date",
+     "action_type":"M&A|FDI|Dividend|Strategic|IPO|Buyback|Other",
+     "headline":"clean one-line description",
+     "fx_implication":"one sentence — currency pair + SC product opportunity",
+     "significance":"High|Medium|Low","inr_involved":true,
+     "deal_value":"$420M or Rs 3200cr or null",
+     "counterparty":"name or null","source_url":"URL or null"}
+  ],
+  "Company 2": [...],
+  "Company 3": []
+}
+
+Return ONLY valid JSON object. No other text."""
 
 
 # ─── Classifier prompt (for gemini_classify) ─────────────────────────────────
@@ -509,6 +565,190 @@ def web_search_client_lite(rec: dict) -> list:
             raise   # let batch_manager's stop-and-save handler fire
         print(f"  Gemini Lite web search error {sub[:30]}: {ex}")
         return []
+
+
+# ─── 1c. Batch web search — heavy (multiple clients per call) ────────────────
+
+def web_search_clients_batch(recs: list, api_key: str, key_id: str) -> list:
+    """
+    Search N clients in a single grounded 2.5 Flash call.
+    Returns list of event lists, same order/length as recs.
+
+    Why: free tier is 5 RPM but 250K TPM. Batching 2 clients per call
+    halves RPM consumption while barely touching the TPM budget.
+    Effect: 20 RPD × 2 clients/call × 3 keys = 120 heavy clients/day.
+
+    On rate limit: re-raises so batch_manager stops cleanly.
+    On other error: returns empty lists (no crash).
+    """
+    if not recs or not api_key:
+        return [[] for _ in recs]
+
+    blocks = []
+    for i, rec in enumerate(recs, 1):
+        sub = rec.get("indian_subsidiary", "") or ""
+        grp = rec.get("client_group", "") or ""
+        exp = rec.get("net_nih_exposure", 0) or 0
+        blocks.append(
+            f"Company {i}: {sub}\n"
+            f"  MNC Parent: {grp}\n"
+            f"  NIH Exposure: ${exp:,.0f}M"
+        )
+
+    user_msg = (
+        f"Search for corporate actions for each of these {len(recs)} companies. "
+        f"Search for each company separately. Focus on cross-border INR FX flows.\n\n"
+        + "\n\n".join(blocks)
+        + f"\n\nReturn JSON object with keys 'Company 1' through 'Company {len(recs)}'."
+    )
+
+    try:
+        from token_tracker import record_usage
+        raw = _call(WEB_SEARCH_BATCH_SYSTEM, user_msg,
+                    use_search=True,
+                    max_tokens=1500 * len(recs),
+                    api_key=api_key)
+        _record_rpd(key_id)
+
+        # Parse as JSON object (not array)
+        text = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
+        text = re.sub(r"\s*```$",          "", text, flags=re.MULTILINE)
+        m    = re.search(r"\{.*\}", text, re.DOTALL)
+        data = json.loads(m.group(0) if m else text.strip())
+        if not isinstance(data, dict):
+            return [[] for _ in recs]
+
+        results = []
+        for i, rec in enumerate(recs, 1):
+            sub        = rec.get("indian_subsidiary", "") or ""
+            events_raw = data.get(f"Company {i}", [])
+            if not isinstance(events_raw, list):
+                events_raw = []
+            evs = []
+            for ev in events_raw:
+                if not ev.get("inr_involved", True):
+                    continue
+                evs.append({
+                    "company_name":        sub[:60],
+                    "ticker":              rec.get("ticker"),
+                    "action_type":         ev.get("action_type", "Other"),
+                    "headline":            ev.get("headline", "")[:200],
+                    "date":                str(ev.get("event_date") or ev.get("date",""))[:10],
+                    "amount":              _parse_amount(str(ev.get("deal_value","") or "")),
+                    "currency":            "USD",
+                    "source":              "Gemini web search",
+                    "raw_detail":          ev.get("fx_implication","")[:300],
+                    "url":                 ev.get("source_url","") or "",
+                    "foreign_entity":      ev.get("counterparty"),
+                    "_significance":       ev.get("significance","Medium"),
+                    "_inr_involved":       True,
+                    "_pre_matched":        rec,
+                    "_gemini_verified":    True,
+                    "_is_primary_subject": True,
+                    "_groq_significant":   True,
+                    "_groq_confidence":    "high",
+                    "_skip_india_india":   False,
+                    "_indian_sub_div":     ev.get("action_type","") == "Dividend",
+                })
+            record_usage("web_search", 800, f"{rec.get('client_group','')}|{sub}")
+            results.append(evs)
+        return results
+
+    except Exception as ex:
+        err = str(ex)
+        if "rate limit" in err.lower():
+            raise
+        print(f"  Gemini batch (heavy) error: {ex}")
+        return [[] for _ in recs]
+
+
+# ─── 1d. Batch web search — lite (multiple clients per call) ─────────────────
+
+def web_search_clients_batch_lite(recs: list) -> list:
+    """
+    Search N clients in a single grounded 3.1 Flash Lite call.
+    Same interface as web_search_clients_batch — returns list of event lists.
+    Uses round-robin across all keys for RPM distribution.
+    """
+    lite_key = _get_lite_key()
+    if not lite_key or not recs:
+        return [[] for _ in recs]
+
+    blocks = []
+    for i, rec in enumerate(recs, 1):
+        sub = rec.get("indian_subsidiary", "") or ""
+        grp = rec.get("client_group", "") or ""
+        exp = rec.get("net_nih_exposure", 0) or 0
+        blocks.append(
+            f"Company {i}: {sub}\n"
+            f"  MNC Parent: {grp}\n"
+            f"  NIH Exposure: ${exp:,.0f}M"
+        )
+
+    user_msg = (
+        f"Search for corporate actions for each of these {len(recs)} companies. "
+        f"Search each separately. Focus on cross-border INR FX flows.\n\n"
+        + "\n\n".join(blocks)
+        + f"\n\nReturn JSON object with keys 'Company 1' through 'Company {len(recs)}'."
+    )
+
+    try:
+        from token_tracker import record_usage
+        raw = _call(WEB_SEARCH_BATCH_SYSTEM, user_msg,
+                    use_search=True,
+                    max_tokens=1200 * len(recs),
+                    model=GEMINI_MODEL_LITE,
+                    api_key=lite_key)
+
+        text = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
+        text = re.sub(r"\s*```$",          "", text, flags=re.MULTILINE)
+        m    = re.search(r"\{.*\}", text, re.DOTALL)
+        data = json.loads(m.group(0) if m else text.strip())
+        if not isinstance(data, dict):
+            return [[] for _ in recs]
+
+        results = []
+        for i, rec in enumerate(recs, 1):
+            sub        = rec.get("indian_subsidiary", "") or ""
+            events_raw = data.get(f"Company {i}", [])
+            if not isinstance(events_raw, list):
+                events_raw = []
+            evs = []
+            for ev in events_raw:
+                if not ev.get("inr_involved", True):
+                    continue
+                evs.append({
+                    "company_name":        sub[:60],
+                    "ticker":              rec.get("ticker"),
+                    "action_type":         ev.get("action_type", "Other"),
+                    "headline":            ev.get("headline", "")[:200],
+                    "date":                str(ev.get("event_date") or ev.get("date",""))[:10],
+                    "amount":              _parse_amount(str(ev.get("deal_value","") or "")),
+                    "currency":            "USD",
+                    "source":              "Gemini web search",
+                    "raw_detail":          ev.get("fx_implication","")[:300],
+                    "url":                 ev.get("source_url","") or "",
+                    "foreign_entity":      ev.get("counterparty"),
+                    "_significance":       ev.get("significance","Medium"),
+                    "_inr_involved":       True,
+                    "_pre_matched":        rec,
+                    "_gemini_verified":    True,
+                    "_is_primary_subject": True,
+                    "_groq_significant":   True,
+                    "_groq_confidence":    "high",
+                    "_skip_india_india":   False,
+                    "_indian_sub_div":     ev.get("action_type","") == "Dividend",
+                })
+            record_usage("web_search", 600, f"{rec.get('client_group','')}|{sub}")
+            results.append(evs)
+        return results
+
+    except Exception as ex:
+        err = str(ex)
+        if "rate limit" in err.lower():
+            raise
+        print(f"  Gemini batch (lite) error: {ex}")
+        return [[] for _ in recs]
 
 
 # ─── 1c. Batch classifier (Gemini 3.1 Flash Lite — replaces Groq batch_classify) ──
