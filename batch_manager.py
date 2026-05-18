@@ -167,14 +167,20 @@ def run_next_batch(registry: dict,
         print("  Batch: nothing to search")
         return cache
 
-    # ── Route: first 20 → 2.5 Flash (heavy), rest → 3.1 Flash Lite ──────────
-    HEAVY_LIMIT = 20
+    # ── Route: N×20 → 2.5 Flash (heavy), rest → 3.1 Flash Lite ─────────────
+    # HEAVY_LIMIT and sleep scale dynamically with available key count.
+    # Each key has 5 RPM; round-robin across N keys → effective N×5 RPM total.
+    # Sleep between heavy calls = max(4s, 12s ÷ N_keys) to stay within per-key RPM.
+    from gemini_engine import n_heavy_keys
+    _n_keys     = max(1, n_heavy_keys())
+    HEAVY_LIMIT = 20 * _n_keys
+    HEAVY_SLEEP = max(4, 12 // _n_keys)   # e.g. 3 keys → 4s; 2 keys → 6s; 1 key → 12s
     heavy_queue = queue[:HEAVY_LIMIT]
     lite_queue  = queue[HEAVY_LIMIT:]
 
     print(f"  Batch: {len(queue)} clients queued — "
-          f"{len(heavy_queue)} heavy (2.5 Flash) / "
-          f"{len(lite_queue)} lite (3.1 Flash Lite) | "
+          f"{len(heavy_queue)} heavy (2.5 Flash ×{_n_keys}keys/{HEAVY_SLEEP}s) / "
+          f"{len(lite_queue)} lite (3.1 Flash Lite/6s) | "
           f"{len(signal_clients)} signal-triggered")
     cache = mark_batch_run(cache)
 
@@ -188,7 +194,7 @@ def run_next_batch(registry: dict,
             cache  = mark_searched(cache, rec, events)
             print(f"    ✓[2.5F] {sub[:32]:<32} {len(events)} events")
             searched += 1
-            time.sleep(12)
+            time.sleep(HEAVY_SLEEP)
         except Exception as ex:
             err = str(ex)
             if "rate limit" in err.lower():
@@ -277,6 +283,18 @@ def get_all_cached_events(registry: dict, cache: dict) -> list:
                                          ev.get("foreign_entity")),
                 "_significance":  ev.get("significance","Medium"),
                 "_pre_matched":   rec,
+                # ── Pre-populated classification flags ───────────────────────
+                # Gemini already verified INR relevance and filtered noise.
+                # These prevent redundant Groq reclassification in corporate_fetcher,
+                # which would waste tokens and risk downgrading 2.5 Flash judgement
+                # with the weaker 8b classifier.
+                "_inr_involved":       True,
+                "_is_primary_subject": True,
+                "_groq_significant":   True,
+                "_groq_confidence":    "high",
+                "_skip_india_india":   False,
+                "_indian_sub_div":     ev.get("action_type","") == "Dividend",
+                "_gemini_verified":    True,
             })
     print(f"  Cache: {len(out)} events from {len(cache)-1} searched clients")
     return out

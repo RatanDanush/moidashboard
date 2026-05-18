@@ -496,9 +496,12 @@ def fetch_all_corporate_actions(registry: dict) -> tuple:
 
     # Step 3: Classify — Groq primary (no RPM cost), Gemini as emergency fallback only.
     # Gemini's 15 RPM is reserved entirely for grounded web search in batch_manager.
+    # Events with _gemini_verified=True are already classified by 2.5 Flash — skip them
+    # to avoid wasting Groq tokens and overriding better Gemini judgement with 8b.
     to_classify = [(i, a) for i, a in enumerate(raw)
-                   if any(s in a.get("source","") for s in
-                          ["Google News","News —","Gemini web","Moneycontrol",
+                   if not a.get("_gemini_verified")
+                   and any(s in a.get("source","") for s in
+                          ["Google News","News —","Moneycontrol",
                            "Economic","Business Standard","Mint",
                            "Google News — Dividend"])]
     if to_classify:

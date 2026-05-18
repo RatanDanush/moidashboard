@@ -1,36 +1,133 @@
 """
 gemini_engine.py
 ----------------
-Gemini-powered intelligence engine — two-model routing strategy.
+Gemini-powered intelligence engine — multi-key, two-model routing strategy.
+
+Key pool:
+  GEMINI_API_KEY / _2 / _3  →  up to 3 keys, each with 20 RPD (2.5 Flash)
+  Total effective heavy RPD = 20 × N_keys (60 RPD with 3 keys)
+  Heavy sleep = max(4s, 12s ÷ N_keys) — preserves 5 RPM per key via round-robin
 
 Models:
-  gemini-2.5-flash-preview-05-20  →  5 RPM / 20 RPD (free tier)
+  gemini-2.5-flash      →  5 RPM / 20 RPD per key — heavy quality with grounding
     Used for: P1/P2 batch web search (signal-triggered + top Tier 1)
               Deep dive (on-demand grounded search)
               Daily briefing synthesis
 
-  gemini-3.1-flash-lite           →  15 RPM / 500 RPD (free tier)
+  gemini-3.1-flash-lite →  15 RPM / 500 RPD — high throughput
     Used for: P3/P4 batch web search (all remaining clients)
-              Classification + noise filter (replaces Groq batch_classify)
-              Dividend-specific queries
+              Classification fallback (when Groq unavailable)
 
 Functions:
-  1. web_search_client()       — 2.5 Flash grounded search (P1/P2, top 20/day)
+  1. web_search_client()       — 2.5 Flash grounded search (P1/P2, N×20/day)
   2. web_search_client_lite()  — 3.1 Flash Lite grounded search (P3/P4, 500/day)
-  3. gemini_classify()         — 3.1 Flash Lite batch classifier (drop-in for batch_classify)
+  3. gemini_classify()         — 3.1 Flash Lite batch classifier (Groq fallback)
   4. daily_briefing()          — 2.5 Flash FX desk summary
   5. deep_dive_search()        — 2.5 Flash 12-month grounded history
+  6. n_heavy_keys()            — returns count of keys with RPD budget remaining
+  7. heavy_rpd_status()        — per-key RPD usage dict for dashboard display
 """
 
-import os, re, json, time, requests
+import os, re, json, time, requests, datetime
 import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
-GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL     = "gemini-2.5-flash"                  # 5 RPM / 20 RPD  — GA model (replaces preview-05-20)
-GEMINI_MODEL_LITE = "gemini-3.1-flash-lite"            # 15 RPM / 500 RPD — high throughput
-_BASE_URL        = "https://generativelanguage.googleapis.com/v1beta/models"
+
+# ─── Key pool ────────────────────────────────────────────────────────────────
+# Each key is a separate Google AI Studio project with its own 20 RPD budget.
+# Round-robining across keys multiplies effective daily heavy RPD proportionally.
+GEMINI_API_KEY   = os.getenv("GEMINI_API_KEY",   "")
+GEMINI_API_KEY_2 = os.getenv("GEMINI_API_KEY_2", "")
+GEMINI_API_KEY_3 = os.getenv("GEMINI_API_KEY_3", "")
+
+_HEAVY_KEYS = [k for k in [GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3] if k]
+_LITE_KEY   = GEMINI_API_KEY   # Lite (500 RPD/key) — primary key is sufficient
+
+GEMINI_MODEL      = "gemini-2.5-flash"        # 5 RPM / 20 RPD per key — heavy quality
+GEMINI_MODEL_LITE = "gemini-3.1-flash-lite"   # 15 RPM / 500 RPD — high throughput
+_BASE_URL         = "https://generativelanguage.googleapis.com/v1beta/models"
+
+# ─── Per-key RPD tracker ─────────────────────────────────────────────────────
+_RPD_FILE        = "gemini_rpd_tracker.json"
+_RPD_LIMIT_HEAVY = 19   # leave 1 buffer per key for deep dive / briefing calls
+
+
+def _load_rpd() -> dict:
+    today = datetime.date.today().isoformat()
+    try:
+        if os.path.exists(_RPD_FILE):
+            data = json.load(open(_RPD_FILE))
+            if data.get("date") == today:
+                return data
+    except Exception:
+        pass
+    return {"date": today, "keys": {}}
+
+
+def _save_rpd(data: dict):
+    try:
+        with open(_RPD_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as ex:
+        print(f"  Gemini RPD save error: {ex}")
+
+
+def _record_rpd(key_id: str):
+    """Increment daily call counter for a specific key."""
+    data = _load_rpd()
+    data["keys"][key_id] = data["keys"].get(key_id, 0) + 1
+    _save_rpd(data)
+
+
+def _get_heavy_key():
+    """
+    Return (api_key, key_id) for the heavy key with lowest RPD usage today.
+    Picks lowest-used key first to spread load evenly across keys.
+    Returns (None, None) if all keys are exhausted.
+    """
+    if not _HEAVY_KEYS:
+        return None, None
+    data   = _load_rpd()
+    usage  = data.get("keys", {})
+    ranked = sorted(
+        [(i, k, usage.get(f"heavy_{i}", 0)) for i, k in enumerate(_HEAVY_KEYS)],
+        key=lambda x: x[2],
+    )
+    for idx, key, used in ranked:
+        if used < _RPD_LIMIT_HEAVY:
+            return key, f"heavy_{idx}"
+    return None, None   # all keys exhausted today
+
+
+def n_heavy_keys() -> int:
+    """Number of heavy keys (2.5 Flash) with remaining RPD budget today.
+    Used by batch_manager to set HEAVY_LIMIT and sleep intervals dynamically."""
+    data  = _load_rpd()
+    usage = data.get("keys", {})
+    return sum(
+        1 for i in range(len(_HEAVY_KEYS))
+        if usage.get(f"heavy_{i}", 0) < _RPD_LIMIT_HEAVY
+    )
+
+
+def heavy_rpd_status() -> dict:
+    """Per-key and total RPD status — for dashboard display."""
+    data  = _load_rpd()
+    usage = data.get("keys", {})
+    per_key = {
+        f"Key {i+1}": usage.get(f"heavy_{i}", 0)
+        for i in range(len(_HEAVY_KEYS))
+    }
+    total_used = sum(per_key.values())
+    total_cap  = _RPD_LIMIT_HEAVY * len(_HEAVY_KEYS)
+    return {
+        "per_key":     per_key,
+        "total_used":  total_used,
+        "total_cap":   total_cap,
+        "remaining":   max(0, total_cap - total_used),
+        "n_keys":      len(_HEAVY_KEYS),
+    }
 
 
 # ─── System prompts ──────────────────────────────────────────────────────────
@@ -157,14 +254,18 @@ Return ONLY a valid JSON array, one object per headline. No other text."""
 def _call(system: str, user: str,
           use_search: bool = True,
           max_tokens: int  = 2000,
-          model: str       = None) -> str:
+          model: str       = None,
+          api_key: str     = None) -> str:
     """
     Single Gemini API call via REST.
-    model defaults to GEMINI_MODEL (2.5 Flash); pass GEMINI_MODEL_LITE for throughput.
-    use_search=True enables Google Search grounding — reads full web articles.
+    model   — defaults to GEMINI_MODEL (2.5 Flash); pass GEMINI_MODEL_LITE for throughput.
+    api_key — explicit key to use; callers supply from _get_heavy_key() or _LITE_KEY.
+              Falls back to GEMINI_API_KEY if not provided.
+    use_search=True enables Google Search grounding.
     """
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY not set — add to Streamlit secrets")
+    _key   = api_key or GEMINI_API_KEY
+    if not _key:
+        raise ValueError("No Gemini API key available — add GEMINI_API_KEY to Streamlit secrets")
 
     _model = model or GEMINI_MODEL
 
@@ -180,7 +281,7 @@ def _call(system: str, user: str,
     if use_search:
         payload["tools"] = [{"google_search": {}}]
 
-    url  = f"{_BASE_URL}/{_model}:generateContent?key={GEMINI_API_KEY}"
+    url  = f"{_BASE_URL}/{_model}:generateContent?key={_key}"
     resp = requests.post(url, json=payload, timeout=45)
 
     if resp.status_code == 429:
@@ -278,7 +379,15 @@ def web_search_client(rec: dict) -> list:
         if client_already_searched(client_key):
             return []
 
-        raw = _call(WEB_SEARCH_SYSTEM, user_msg, use_search=True)
+        # Pick lowest-used heavy key — exhausted keys return (None, None)
+        api_key, key_id = _get_heavy_key()
+        if not api_key:
+            print(f"  Gemini heavy: all keys exhausted today — skipping {sub[:30]}")
+            return []
+
+        raw = _call(WEB_SEARCH_SYSTEM, user_msg, use_search=True, api_key=api_key)
+        _record_rpd(key_id)   # count against that key's daily budget
+
         if not raw.strip():
             return []
 
@@ -286,8 +395,7 @@ def web_search_client(rec: dict) -> list:
         if not isinstance(events, list):
             return []
 
-        # Record nominal tokens to keep client deduplication working in token_tracker
-        # Gemini doesn't count against Groq token budget — this is just for tracking
+        # Nominal token record — keeps client dedup in token_tracker working
         record_usage("web_search", 1200, client_key)
 
         results = []
@@ -353,10 +461,14 @@ def web_search_client_lite(rec: dict) -> list:
         if client_already_searched(client_key):
             return []
 
+        if not _LITE_KEY:
+            return []
+
         raw = _call(WEB_SEARCH_SYSTEM, user_msg,
                     use_search=True,
                     max_tokens=1500,
-                    model=GEMINI_MODEL_LITE)
+                    model=GEMINI_MODEL_LITE,
+                    api_key=_LITE_KEY)
         if not raw.strip():
             return []
 
