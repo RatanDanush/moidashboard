@@ -84,7 +84,7 @@ def build_priority_queue(registry: dict,
                          signal_clients: set,
                          cache: dict) -> list:
     """
-    Build ordered list of clients to Groq web search.
+    Build ordered list of clients to Gemini web search.
 
     signal_clients: set of client_keys where RSS/GNews found
                     M&A/FDI/Strategic/IPO/Buyback this refresh
@@ -94,6 +94,10 @@ def build_priority_queue(registry: dict,
       P2 — Tier 1, not in signal_clients, not searched today
       P3 — Tier 2, not in signal_clients, not searched today
       P4 — everyone else (skipped — RSS only)
+
+    Dedup: checks BOTH token_tracker (within-session) AND web_search_cache.json
+    (cross-session, updated after each client). Prevents parallel sessions from
+    searching the same client and burning duplicate RPD budget.
     """
     from token_tracker import client_already_searched
 
@@ -105,14 +109,18 @@ def build_priority_queue(registry: dict,
     for rec in all_recs:
         key = _client_key(rec)
 
-        # Skip if already searched today (token tracker tracks this)
+        # Skip if already searched today — check BOTH sources:
+        # token_tracker: fast in-memory dedup for current session
+        # cache: cross-session dedup (shared file, updated after each client)
         if client_already_searched(key):
             continue
+        if _hours_since(cache.get(key, {}).get("last_searched", "")) < 23:
+            continue   # another session already searched this client today
 
         tier = rec.get("priority_tier","") or ""
 
         if key in signal_clients:
-            p1.append(rec)                         # always search
+            p1.append(rec)
         elif "TIER 1" in tier.upper():
             p2.append(rec)
         elif "TIER 2" in tier.upper():

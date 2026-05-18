@@ -421,6 +421,9 @@ def web_search_client(rec: dict) -> list:
         return results
 
     except Exception as ex:
+        err = str(ex)
+        if "rate limit" in err.lower():
+            raise   # let batch_manager's stop-and-save handler fire
         print(f"  Gemini web search error {sub[:30]}: {ex}")
         return []
 
@@ -501,6 +504,9 @@ def web_search_client_lite(rec: dict) -> list:
         return results
 
     except Exception as ex:
+        err = str(ex)
+        if "rate limit" in err.lower():
+            raise   # let batch_manager's stop-and-save handler fire
         print(f"  Gemini Lite web search error {sub[:30]}: {ex}")
         return []
 

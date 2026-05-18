@@ -83,6 +83,18 @@ MARKET_COMMENTARY_PHRASES = [
     "public provident fund", "fixed deposit maturity",
     "mutual fund sip", "what should investors choose",
     "account maturity", "phased withdrawals",
+    # ── SIP / corpus-building retail investor articles ─────────────────────────
+    # Pattern: "SIPs: Here's how monthly investment of ₹5,000 can yield..."
+    # The amount extractor reads ₹5,000 as a per-share value — must filter upstream.
+    "systematic investment plan",
+    "monthly investment of",       # "monthly investment of ₹5,000, ₹10,000..."
+    "here's how monthly",          # "Here's how monthly investment of..."
+    "sip of ₹", "sip calculator", "sip returns", "sip amount",
+    "how much sip", "monthly sip",
+    "build corpus", "corpus of ₹", "corpus of rs",
+    "lumpsum investment", "lump sum investment",
+    "yield for you", "returns for you",
+    "invest ₹5,000", "invest ₹10,000", "invest ₹15,000",
 ]
 
 # ─── Aggregator / list articles ───────────────────────────────────────────────
@@ -265,6 +277,10 @@ NON_INDIA_GEOS = [
     "in italy", "in poland", "in sweden", "in norway", "in finland",
     "in madagascar", "in africa", "in sri lanka", "in myanmar",
     "in singapore", "in hong kong", "in taiwan",
+    "in nepal", "in kenya", "in nigeria", "in ethiopia",
+    "in argentina", "in chile", "in colombia", "in peru",
+    "in turkey", "in egypt", "in south africa",
+    "in the philippines", "in philippines",
     # bare country names (safe because INVESTMENT_KEYWORDS guard is required)
     "netherlands", "germany", "france", "united states", "united kingdom",
     "australia", "canada", "brazil", "south korea", "saudi arabia",
@@ -298,6 +314,60 @@ def is_non_india_geography_investment(headline: str) -> bool:
     if not any(kw in h for kw in INVESTMENT_KEYWORDS):
         return False
     return any(geo in h for geo in NON_INDIA_GEOS)
+
+
+# ─── Non-India geography dividend filter ─────────────────────────────────────
+# Catches dividends declared by non-India entities matched via parent name.
+# Example: "Carlsberg Malaysia declares 24 sen interim dividend" → matched to
+# Carlsberg India, but the dividend is in MYR, not INR — no FX flow.
+
+NON_INDIA_DIVIDEND_GEOS = [
+    # Country/region names that identify a non-India declaring entity
+    # (bare names safe here — guarded by dividend keyword + no-India checks)
+    "malaysia", "singapore", "thailand", "indonesia", "vietnam",
+    "philippines", "australia", "japan", "china", "south korea",
+    "taiwan", "hong kong", "germany", "france", "netherlands",
+    "sweden", "norway", "denmark", "switzerland", "belgium",
+    "united states", "canada", "brazil", "mexico", "argentina",
+    "nepal", "bangladesh", "sri lanka", "myanmar", "kenya",
+    "nigeria", "south africa", "egypt", "turkey",
+    "united kingdom", "spain", "italy", "poland",
+    # Adjective forms (e.g. "Malaysian entity declares dividend")
+    "malaysian", "singaporean", "thai", "indonesian", "vietnamese",
+    "philippine", "australian", "japanese", "chinese", "korean",
+    "taiwanese", "german", "french", "dutch", "swedish", "danish",
+    "norwegian", "swiss", "belgian", "american", "british", "canadian",
+    "brazilian", "mexican", "nepalese", "bangladeshi",
+    # Currency subunits that signal non-INR dividend (belt-and-suspenders)
+    " sen ", " baht ", " ringgit ", " won ", " yen ",
+    " yuan ", " franc ", " krona ", " krone ",
+]
+
+DIVIDEND_KEYWORDS = [
+    "dividend", "declares", "interim dividend", "final dividend",
+    "special dividend", "distribution", "payout",
+]
+
+
+def is_non_india_geography_dividend(headline: str) -> bool:
+    """
+    Returns True (force inr_involved=False) if a dividend headline's primary
+    subject is clearly a non-India entity with no India mention.
+
+    Safe:    "Carlsberg India declares ₹35/sh interim dividend"   → India present
+    Safe:    "ABB declares dividend for FY26"                     → no geo marker
+    Catches: "Carlsberg Malaysia declares 24 sen interim dividend" → Malaysia + no India
+    Catches: "Nestlé Switzerland pays CHF 3.00 dividend"          → Switzerland + no India
+
+    Guard: only fires when BOTH a non-India geo AND a dividend keyword are present,
+    AND "india"/"indian" is absent — prevents over-filtering.
+    """
+    h = headline.lower()
+    if "india" in h or "indian" in h:
+        return False
+    if not any(kw in h for kw in DIVIDEND_KEYWORDS):
+        return False
+    return any(geo in h for geo in NON_INDIA_DIVIDEND_GEOS)
 
 
 # ─── IPO subject mismatch detector ───────────────────────────────────────────

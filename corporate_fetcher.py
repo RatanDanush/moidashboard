@@ -498,12 +498,50 @@ def fetch_all_corporate_actions(registry: dict) -> tuple:
     # Gemini's 15 RPM is reserved entirely for grounded web search in batch_manager.
     # Events with _gemini_verified=True are already classified by 2.5 Flash — skip them
     # to avoid wasting Groq tokens and overriding better Gemini judgement with 8b.
-    to_classify = [(i, a) for i, a in enumerate(raw)
-                   if not a.get("_gemini_verified")
-                   and any(s in a.get("source","") for s in
-                          ["Google News","News —","Moneycontrol",
-                           "Economic","Business Standard","Mint",
-                           "Google News — Dividend"])]
+    #
+    # Classify cap: 300 items max per run (~16.8K tokens) keeps within the 40K/day
+    # budget for two refreshes. Overflow items get conservative defaults — the
+    # deterministic filters in Step 4 still catch non-India geos and obvious noise.
+
+    _SOURCE_RANK = {                  # lower = higher priority for classification
+        "Moneycontrol": 0, "Economic": 0, "Business Standard": 0, "Mint": 0,
+        "News —":             1,      # active_searcher Indian financial sites
+        "Google News — Dividend": 2,
+        "Google News":        3,      # generic queries — most volume, lowest precision
+    }
+    def _src_rank(item):
+        src = item[1].get("source", "")
+        for k, v in _SOURCE_RANK.items():
+            if k in src:
+                return v
+        return 99
+
+    MAX_CLASSIFY = 300   # ~16.8K tokens/run; safe for 2 daily refreshes in 40K budget
+
+    to_classify_all = [(i, a) for i, a in enumerate(raw)
+                       if not a.get("_gemini_verified")
+                       and any(s in a.get("source","") for s in
+                              ["Google News","News —","Moneycontrol",
+                               "Economic","Business Standard","Mint",
+                               "Google News — Dividend"])]
+
+    to_classify_all.sort(key=_src_rank)          # best sources first
+    to_classify = to_classify_all[:MAX_CLASSIFY]
+    overflow    = to_classify_all[MAX_CLASSIFY:]
+
+    # Overflow: apply conservative defaults so Step 4 deterministic filters still run
+    for idx, a in overflow:
+        raw[idx]["_groq_confidence"]    = "low"
+        raw[idx]["_groq_significant"]   = True
+        raw[idx]["_inr_involved"]       = True
+        raw[idx]["_skip_india_india"]   = False
+        raw[idx]["_indian_sub_div"]     = "Dividend" in a.get("action_type","")
+        raw[idx]["_is_primary_subject"] = True
+
+    if overflow:
+        print(f"  Classify cap: {len(to_classify)} → Groq, "
+              f"{len(overflow)} overflow (low-conf defaults applied)")
+
     if to_classify:
         hl_tuple = tuple(
             (a["headline"], a.get("raw_detail","")[:120])
@@ -559,7 +597,9 @@ def fetch_all_corporate_actions(registry: dict) -> tuple:
 
     # Step 4: Apply filters
     from filters import (pre_filter, WEB_SEARCH_TRIGGER_TYPES,
-                         is_non_india_geography_investment, is_ipo_mismatch)
+                         is_non_india_geography_investment,
+                         is_non_india_geography_dividend,
+                         is_ipo_mismatch)
     pre_count    = len(raw)
     filtered_raw = []
     for a in raw:
@@ -578,7 +618,13 @@ def fetch_all_corporate_actions(registry: dict) -> tuple:
             if is_non_india_geography_investment(headline):
                 a["_inr_involved"] = False
 
-            # ── Deterministic override 2: IPO subject mismatch ────────────────
+            # ── Deterministic override 2: non-India geography dividend ────────
+            # Groq-8b matches "Carlsberg Malaysia declares dividend" to Carlsberg
+            # India via parent name — but the dividend is MYR not INR, no FX flow.
+            if atype == "Dividend" and is_non_india_geography_dividend(headline):
+                a["_inr_involved"] = False
+
+            # ── Deterministic override 3: IPO subject mismatch ────────────────
             # Groq-8b sees "Cerebras IPO, Apple vs Big Tech" and attributes the
             # IPO to Apple India. Check who the actual IPO entity is.
             if atype == "IPO":
