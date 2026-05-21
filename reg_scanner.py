@@ -133,7 +133,18 @@ def _fuzzy_match(name: str, registry: dict, threshold: float = 0.72):
             cand_set = set(norm_cand.split())
             if not any(t in cand_set for t in match_toks[:4]):
                 continue
-            score = _partial_seq(norm_cand, norm_name)
+            # For very short tokens (≤3 chars: ABB, SKF, 3M, MAS …)
+            # partial_seq returns 1.0 just because "mas" appears anywhere in the
+            # longer string — use full SequenceMatcher instead, which requires the
+            # overall names to be genuinely similar.
+            max_matched_tok = max(
+                (len(t) for t in match_toks if t in cand_set), default=0
+            )
+            if max_matched_tok <= 3:
+                score = difflib.SequenceMatcher(None, norm_name, norm_cand).ratio()
+            else:
+                score = _partial_seq(norm_cand, norm_name)
+
             if score > best_score:
                 best_score, best_record = score, rec
 
@@ -254,8 +265,10 @@ def _parse_ecb_xlsx(xlsx_bytes: bytes) -> list[dict]:
 def _ecb_fx_angle(row: dict, matched: bool) -> str:
     purpose    = row.get("purpose", "").lower()
     lender     = row.get("lender_category", "")
-    amt        = row.get("amount_usd", 0) or 0
-    amt_str    = f"${amt:,.0f}M" if amt >= 1 else ""
+    raw_amt    = row.get("amount_usd", 0) or 0
+    # Scale: XLSX stores raw USD (e.g. 40000000), convert to millions
+    amt        = raw_amt / 1_000_000 if raw_amt > 10_000 else raw_amt
+    amt_str    = f"${amt:,.1f}M" if amt >= 0.1 else ""
 
     if "foreign collaborator" in lender.lower() or "equity holder" in lender.lower():
         hook = "parent-company loan → drawdown likely converted to INR"
