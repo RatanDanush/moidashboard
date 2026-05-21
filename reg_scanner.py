@@ -57,78 +57,74 @@ def _normalize(name: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _fuzzy_match(name: str, registry: dict, threshold: float = 0.55):
-    """
-    Company-name-to-company-name matching. Does NOT use match_by_name() because
-    that function has a len<6 guard designed for headlines — it silently drops
-    ABB (3), 3M (2), SKF (3), BASF (4), Bosch (5) etc.
+# Generic industry words — must NOT drive matches alone
+_GENERIC_TOKENS = {
+    "power", "energy", "infrastructure", "services", "service",
+    "solutions", "solution", "technology", "technologies", "digital",
+    "systems", "system", "pharma", "pharmaceutical", "pharmaceuticals",
+    "foods", "food", "industries", "industry", "industrial",
+    "manufacturing", "construction", "transport", "transportation",
+    "aviation", "engineering", "management", "chemicals", "chemical",
+    "materials", "material", "products", "product", "healthcare",
+    "health", "medical", "renewable", "renewables", "solar",
+    "distribution", "logistics", "ventures", "enterprise", "enterprises",
+    "national", "international", "global", "bank", "banking",
+    "financial", "finance", "capital", "investment", "investments",
+    "transmission", "generation", "sourcing", "processing",
+}
 
-    Strategy:
-    1. Token containment: find the longest token from ECB name (≥2 chars) that
-       appears as a whole word in the registry candidate name.
-    2. SequenceMatcher for final score; boosted based on token length
-       (longer distinctive token = higher confidence floor).
+
+def _partial_seq(short: str, long_: str) -> float:
+    """Slide shorter string over longer; return best SequenceMatcher ratio."""
+    if not short or not long_:
+        return 0.0
+    if len(short) > len(long_):
+        short, long_ = long_, short
+    best = 0.0
+    ln = len(short)
+    for i in range(len(long_) - ln + 1):
+        r = difflib.SequenceMatcher(None, short, long_[i:i+ln]).ratio()
+        if r > best:
+            best = r
+    return best
+
+
+def _fuzzy_match(name: str, registry: dict, threshold: float = 0.72):
     """
-    norm_name = _normalize(name)
-    # Tokens sorted longest-first (most distinctive first)
-    tokens = sorted(
-        [t for t in norm_name.split() if len(t) >= 2],
-        key=len, reverse=True,
-    )
-    if not tokens:
+    Match ECB borrower name against client registry.
+
+    Rules:
+    1. Generic industry tokens (power, technology, finance, foods …) are
+       excluded from driving matches — they cause false positives.
+    2. At least one distinctive token must match as a whole word.
+    3. Final score = partial_seq (slide registry name over ECB name) so
+       short registry names still match longer ECB names.
+    4. No confidence-floor boosts — raw partial_seq ≥ 0.72 required.
+    """
+    norm_name  = _normalize(name)
+    all_toks   = [t for t in norm_name.split() if len(t) >= 2]
+    distinctive = [t for t in all_toks if t not in _GENERIC_TOKENS]
+    match_toks  = sorted(distinctive or all_toks, key=len, reverse=True)
+
+    if not match_toks:
         return None, 0
 
-    best_record = None
-    best_score  = 0.0
+    best_record, best_score = None, 0.0
 
     for rec in registry.get("all", []):
         for field in ("indian_subsidiary", "client_group"):
-            candidate = rec.get(field, "") or ""
-            norm_cand = _normalize(candidate)
+            norm_cand = _normalize(rec.get(field, "") or "")
             if not norm_cand:
                 continue
-
-            cand_tokens = set(norm_cand.split())
-
-            # Find best matching token (word-boundary match only)
-            best_tok_len = 0
-            for tok in tokens:
-                if tok in cand_tokens:
-                    best_tok_len = len(tok)
-                    break
-
-            if best_tok_len == 0:
+            # Gate: a distinctive token must appear as a whole word
+            cand_set = set(norm_cand.split())
+            if not any(t in cand_set for t in match_toks[:4]):
                 continue
-
-            seq = difflib.SequenceMatcher(None, norm_name, norm_cand).ratio()
-
-            # Confidence floor by token length:
-            # ≥7 chars → "siemens","novartis","honeywell" → very distinctive → 0.80
-            # ≥5 chars → "bosch","sanofi","merck"          → distinctive      → 0.73
-            # ≥4 chars → "basf","bayer","3com"             → moderate         → 0.68
-            # 2-3 chars → "abb","skf","3m"                 → short but exact  → 0.65
-            # Hard gate: raw sequence similarity must be reasonable.
-            # Prevents single-token "finance" from matching SMBC to Bajaj Finance.
-            if seq < 0.40:
-                continue
-
-            if best_tok_len >= 7:
-                score = max(seq, 0.80)
-            elif best_tok_len >= 5:
-                score = max(seq, 0.73)
-            elif best_tok_len >= 4:
-                score = max(seq, 0.68)
-            else:
-                score = max(seq, 0.65)
-
+            score = _partial_seq(norm_cand, norm_name)
             if score > best_score:
-                best_score  = score
-                best_record = rec
+                best_score, best_record = score, rec
 
-    if best_score >= threshold:
-        return best_record, int(best_score * 100)
-    return None, 0
-
+    return (best_record, int(best_score * 100)) if best_score >= threshold else (None, 0)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SCANNER 1 — RBI ECB
