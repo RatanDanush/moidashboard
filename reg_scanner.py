@@ -107,6 +107,11 @@ def _fuzzy_match(name: str, registry: dict, threshold: float = 0.55):
             # ≥5 chars → "bosch","sanofi","merck"          → distinctive      → 0.73
             # ≥4 chars → "basf","bayer","3com"             → moderate         → 0.68
             # 2-3 chars → "abb","skf","3m"                 → short but exact  → 0.65
+            # Hard gate: raw sequence similarity must be reasonable.
+            # Prevents single-token "finance" from matching SMBC to Bajaj Finance.
+            if seq < 0.40:
+                continue
+
             if best_tok_len >= 7:
                 score = max(seq, 0.80)
             elif best_tok_len >= 5:
@@ -185,16 +190,19 @@ def _parse_ecb_xlsx(xlsx_bytes: bytes) -> list[dict]:
             df = df.dropna(how="all")
 
             # Normalise column names
+            # IMPORTANT: use exact/startswith checks to avoid mapping
+            # "economic sector of borrower" → "borrower" (false positive)
             col_map = {}
             for col in df.columns:
-                c = str(col).lower()
-                if "borrower" in c:             col_map[col] = "borrower"
-                elif "sector" in c:             col_map[col] = "sector"
-                elif "amount" in c or "usd" in c: col_map[col] = "amount_usd"
-                elif "purpose" in c:            col_map[col] = "purpose"
-                elif "maturity" in c:           col_map[col] = "maturity"
-                elif "lender" in c:             col_map[col] = "lender_category"
-                elif "route" in c:              col_map[col] = "route"
+                c = str(col).lower().strip()
+                if c == "borrower":                         col_map[col] = "borrower"
+                elif "sector" in c:                        col_map[col] = "sector"
+                elif "amount" in c and "usd" in c:         col_map[col] = "amount_usd"
+                elif "equivalent" in c and "amount" in c:  col_map[col] = "amount_usd"
+                elif "purpose" in c:                       col_map[col] = "purpose"
+                elif "maturity" in c:                      col_map[col] = "maturity"
+                elif "lender" in c:                        col_map[col] = "lender_category"
+                elif c == "route" or c.startswith("route"):col_map[col] = "route"
             df = df.rename(columns=col_map)
 
             required = {"borrower", "amount_usd"}
@@ -202,7 +210,11 @@ def _parse_ecb_xlsx(xlsx_bytes: bytes) -> list[dict]:
                 continue
 
             for _, r in df.iterrows():
-                borrower = str(r.get("borrower", "")).strip()
+                raw_b = r.get("borrower", "")
+                # If duplicate columns survive rename, pandas returns a Series
+                if hasattr(raw_b, "iloc"):
+                    raw_b = raw_b.iloc[0]
+                borrower = str(raw_b).strip()
                 if not borrower or borrower.lower() in ("nan", "borrower", ""):
                     continue
                 try:
