@@ -55,13 +55,31 @@ def _normalize(name: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _fuzzy_match(name: str, registry: dict, threshold: float = 0.72):
+def _fuzzy_match(name: str, registry: dict, threshold: float = 0.55):
     """
-    Return (best_registry_record, score_0_to_100) or (None, 0).
-    Checks both indian_subsidiary and client_group fields.
+    Match company name against registry.
+
+    Strategy (in order):
+    1. match_by_name() — substring containment, same logic as live feed.
+       Handles short names (ABB, SKF, 3M) and partial names (Novartis Healthcare).
+    2. SequenceMatcher fallback — catches cases where the name ordering differs.
+       No minimum length gate — short names like ABB/SKF are valid.
     """
+    from client_registry import match_by_name
+
+    # Primary: substring containment (proven on 390-client registry)
+    rec = match_by_name(name, registry)
+    if rec:
+        # Compute a confidence score so the UI can show it
+        norm_n = _normalize(name)
+        norm_c = _normalize(rec.get("indian_subsidiary","") or rec.get("client_group","") or "")
+        seq    = difflib.SequenceMatcher(None, norm_n, norm_c).ratio()
+        score  = max(int(seq * 100), 75)   # floor at 75 since containment confirmed
+        return rec, score
+
+    # Fallback: SequenceMatcher without len gate, lower threshold
     norm_name = _normalize(name)
-    if not norm_name or len(norm_name) < 4:
+    if not norm_name:
         return None, 0
 
     best_record = None
@@ -368,7 +386,7 @@ def _parse_cci_html(html: str, source_url: str) -> list[dict]:
 def _cci_to_result(row: dict, registry: dict) -> dict:
     parties = row.get("parties", "")
     # Try matching both halves of "X acquires Y" pattern
-    matched_rec, score = _fuzzy_match(parties, registry, threshold=0.65)
+    matched_rec, score = _fuzzy_match(parties, registry, threshold=0.55)
 
     # Extract amount if mentioned
     amt_m = None
@@ -536,7 +554,7 @@ def _parse_sebi_oo_html(html: str) -> list[dict]:
 
 
 def _sebi_oo_to_result(row: dict, registry: dict) -> dict:
-    matched_rec, score = _fuzzy_match(row["target"], registry, threshold=0.68)
+    matched_rec, score = _fuzzy_match(row["target"], registry, threshold=0.55)
 
     price_str = f"₹{row['price']:,.2f}/share" if row.get("price") else ""
     pct_str   = f"{row['pct']:.1f}% stake" if row.get("pct") else ""
