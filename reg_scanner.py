@@ -24,6 +24,8 @@ Each result dict has keys:
 import re
 import datetime
 import requests
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import io
 import difflib
 
@@ -57,29 +59,23 @@ def _normalize(name: str) -> str:
 
 def _fuzzy_match(name: str, registry: dict, threshold: float = 0.55):
     """
-    Match company name against registry.
+    Company-name-to-company-name matching. Does NOT use match_by_name() because
+    that function has a len<6 guard designed for headlines — it silently drops
+    ABB (3), 3M (2), SKF (3), BASF (4), Bosch (5) etc.
 
-    Strategy (in order):
-    1. match_by_name() — substring containment, same logic as live feed.
-       Handles short names (ABB, SKF, 3M) and partial names (Novartis Healthcare).
-    2. SequenceMatcher fallback — catches cases where the name ordering differs.
-       No minimum length gate — short names like ABB/SKF are valid.
+    Strategy:
+    1. Token containment: find the longest token from ECB name (≥2 chars) that
+       appears as a whole word in the registry candidate name.
+    2. SequenceMatcher for final score; boosted based on token length
+       (longer distinctive token = higher confidence floor).
     """
-    from client_registry import match_by_name
-
-    # Primary: substring containment (proven on 390-client registry)
-    rec = match_by_name(name, registry)
-    if rec:
-        # Compute a confidence score so the UI can show it
-        norm_n = _normalize(name)
-        norm_c = _normalize(rec.get("indian_subsidiary","") or rec.get("client_group","") or "")
-        seq    = difflib.SequenceMatcher(None, norm_n, norm_c).ratio()
-        score  = max(int(seq * 100), 75)   # floor at 75 since containment confirmed
-        return rec, score
-
-    # Fallback: SequenceMatcher without len gate, lower threshold
     norm_name = _normalize(name)
-    if not norm_name:
+    # Tokens sorted longest-first (most distinctive first)
+    tokens = sorted(
+        [t for t in norm_name.split() if len(t) >= 2],
+        key=len, reverse=True,
+    )
+    if not tokens:
         return None, 0
 
     best_record = None
@@ -91,7 +87,35 @@ def _fuzzy_match(name: str, registry: dict, threshold: float = 0.55):
             norm_cand = _normalize(candidate)
             if not norm_cand:
                 continue
-            score = difflib.SequenceMatcher(None, norm_name, norm_cand).ratio()
+
+            cand_tokens = set(norm_cand.split())
+
+            # Find best matching token (word-boundary match only)
+            best_tok_len = 0
+            for tok in tokens:
+                if tok in cand_tokens:
+                    best_tok_len = len(tok)
+                    break
+
+            if best_tok_len == 0:
+                continue
+
+            seq = difflib.SequenceMatcher(None, norm_name, norm_cand).ratio()
+
+            # Confidence floor by token length:
+            # ≥7 chars → "siemens","novartis","honeywell" → very distinctive → 0.80
+            # ≥5 chars → "bosch","sanofi","merck"          → distinctive      → 0.73
+            # ≥4 chars → "basf","bayer","3com"             → moderate         → 0.68
+            # 2-3 chars → "abb","skf","3m"                 → short but exact  → 0.65
+            if best_tok_len >= 7:
+                score = max(seq, 0.80)
+            elif best_tok_len >= 5:
+                score = max(seq, 0.73)
+            elif best_tok_len >= 4:
+                score = max(seq, 0.68)
+            else:
+                score = max(seq, 0.65)
+
             if score > best_score:
                 best_score  = score
                 best_record = rec
@@ -429,7 +453,7 @@ def scan_cci(registry: dict) -> dict:
 
     for url in [CCI_ORDERS_URL, CCI_GREEN_URL]:
         try:
-            resp = requests.get(url, headers=HDR, timeout=15)
+            resp = requests.get(url, headers=HDR, timeout=15, verify=False)
             resp.raise_for_status()
             parsed = _parse_cci_html(resp.text, url)
             all_rows.extend(parsed)
@@ -590,37 +614,46 @@ def scan_sebi_offers(registry: dict) -> dict:
     error_msg = None
     source_used = "SEBI"
 
-    # Primary: SEBI website
+    # Primary: BSE announcement API (reliable JSON)
+    # SEBI takeover page is JS-rendered — static fetch returns no table data
     try:
-        resp = requests.get(SEBI_OO_URL, headers=HDR, timeout=15)
-        resp.raise_for_status()
-        raw_rows = _parse_sebi_oo_html(resp.text)
+        bse_resp = requests.get(
+            BSE_OO_URL,
+            headers={**HDR, "Referer": "https://www.bseindia.com/"},
+            timeout=15,
+        )
+        data = bse_resp.json()
+        source_used = "BSE"
+        for item in (data if isinstance(data, list) else data.get("Table", [])):
+            company  = item.get("SLONGNAME") or item.get("scrip_name", "")
+            acquirer = item.get("HEADLINE", "")[:80]
+            date_raw = item.get("News_submission_dt") or item.get("DT_TM", "")
+            date_str = date_raw[:10] if date_raw else datetime.date.today().isoformat()
+            if company:
+                raw_rows.append({
+                    "target":   company,
+                    "acquirer": acquirer,
+                    "price":    None,
+                    "pct":      None,
+                    "date":     date_str,
+                })
+        if raw_rows:
+            error_msg = None
     except Exception as ex:
-        print(f"  [SEBI-OO] Primary fetch failed: {ex}")
+        print(f"  [SEBI-OO] BSE primary failed: {ex}")
         error_msg = str(ex)
 
-    # Fallback: BSE API
+    # Fallback: SEBI website HTML parse
     if not raw_rows:
         try:
-            bse_resp = requests.get(BSE_OO_URL, headers={**HDR, "Referer": "https://www.bseindia.com/"}, timeout=15)
-            data     = bse_resp.json()
-            source_used = "BSE"
-            for item in (data if isinstance(data, list) else data.get("Table", [])):
-                company  = item.get("SLONGNAME") or item.get("scrip_name", "")
-                acquirer = item.get("HEADLINE", "")[:80]
-                date_raw = item.get("News_submission_dt") or item.get("DT_TM", "")
-                date_str = date_raw[:10] if date_raw else datetime.date.today().isoformat()
-                if company:
-                    raw_rows.append({
-                        "target":   company,
-                        "acquirer": acquirer,
-                        "price":    None,
-                        "pct":      None,
-                        "date":     date_str,
-                    })
-            error_msg = None
+            resp = requests.get(SEBI_OO_URL, headers=HDR, timeout=15, verify=False)
+            resp.raise_for_status()
+            raw_rows    = _parse_sebi_oo_html(resp.text)
+            source_used = "SEBI"
+            if raw_rows:
+                error_msg = None
         except Exception as ex2:
-            print(f"  [SEBI-OO] BSE fallback also failed: {ex2}")
+            print(f"  [SEBI-OO] SEBI fallback also failed: {ex2}")
 
     results  = [_sebi_oo_to_result(r, registry) for r in raw_rows]
     results.sort(key=lambda x: x["date"], reverse=True)
