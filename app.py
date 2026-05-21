@@ -518,9 +518,9 @@ st.markdown("""
 with st.spinner("Loading registry..."):
     registry = load_registry()
 
-tab_live, tab_dive = st.tabs([
-        "📡  Live Monitor",
-        "🔍  Client Deep Dive"
+tab_live, tab_rbi = st.tabs([
+        "📡  LIVE MONITOR",
+        "🏛️  REGULATORY INTELLIGENCE"
     ])
 
 
@@ -769,131 +769,371 @@ with tab_live:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TAB 2 — CLIENT DEEP DIVE
+# TAB 2 — REGULATORY INTELLIGENCE
 # ═══════════════════════════════════════════════════════════════════════════
-with tab_dive:
-    st.markdown("""
-    <div style="background:#0a1628;border:1px solid #1e3a5f;border-radius:10px;
-                padding:14px 18px;margin-bottom:18px;">
-      <strong style="color:#64b5f6;">Client Deep Dive</strong>
-      <div style="font-size:12px;color:#546e7a;margin-top:4px;">
-        12 months · Google News + ET + BS + Moneycontrol · Groq extracts
-        INR-relevant events only
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+with tab_rbi:
 
-    options = [
-        (f"{r['indian_subsidiary']}  ({r['client_group']})", r)
-        for r in sorted(registry["all"],
-                        key=lambda x: x.get("priority_score",0), reverse=True)
-        if r.get("indian_subsidiary")
-    ]
+    from reg_scanner import scan_ecb, scan_cci, scan_sebi_offers
 
-    dc1, dc2 = st.columns([3,1])
-    with dc1:
-        sel_label = st.selectbox("Select client", [o[0] for o in options])
-    with dc2:
-        run_btn = st.button("🔍 Search 12 months", width="stretch", type="primary")
+    ri_ecb, ri_cci, ri_sebi, ri_dive = st.tabs([
+        "📋  ECB SCAN",
+        "⚖️  CCI FILINGS",
+        "🔔  SEBI OPEN OFFERS",
+        "🔍  CLIENT DEEP DIVE",
+    ])
 
-    sel_rec = next((r for l,r in options if l==sel_label), None)
+    # ── Shared renderer ─────────────────────────────────────────────────────
+    def _reg_card(item: dict, show_match: bool = True):
+        """Render one regulatory result card."""
+        matched  = item.get("matched_client")
+        score    = item.get("match_score", 0)
+        source   = item.get("source", "")
+        amt      = item.get("amount_usd_m")
+        amt_str  = f"${amt:,.1f}M" if amt else ""
 
-    if sel_rec:
-        sub  = sel_rec["indian_subsidiary"]
-        grp  = sel_rec["client_group"]
-        exp  = sel_rec.get("net_nih_exposure",0) or 0
-        tier = sel_rec.get("priority_tier","")
+        border   = "#43a047" if matched else "#1976d2"
+        bg       = "#021008" if matched else "#000d1a"
+
+        client_badge = ""
+        if matched:
+            sub  = matched.get("indian_subsidiary","")[:30]
+            nih  = matched.get("net_nih_exposure", 0) or 0
+            client_badge = (
+                f'<span style="background:#0a1e0a;color:#66bb6a;font-size:9px;'
+                f'font-weight:700;padding:1px 7px;border-radius:2px;margin-left:6px;">'
+                f'✓ {sub} · NIH ${nih:,.0f}M · {score}% match</span>'
+            )
+
+        source_colors = {
+            "RBI-ECB": "#ff6600", "CCI": "#e040fb", "SEBI-OO": "#29b6f6"
+        }
+        src_col = source_colors.get(source, "#888")
+        src_labels = {
+            "RBI-ECB": "RBI · ECB", "CCI": "CCI · COMBO", "SEBI-OO": "SEBI · OPEN OFFER"
+        }
+        src_lbl = src_labels.get(source, source)
+
         st.markdown(f"""
-        <div style="border:1px solid #1e3a5f;border-radius:8px;
-                    padding:12px 16px;margin-bottom:16px;background:#06111a;">
-          <div style="font-size:14px;font-weight:500;color:#eceff1;">{sub}</div>
-          <div style="font-size:12px;color:#64b5f6;">{grp}</div>
-          <div style="font-size:11px;color:#37474f;margin-top:4px;">
-            NIH: <strong style="color:#a5d6a7;">${exp:,.0f}M</strong>
-            &nbsp;·&nbsp; {tier[:25] if tier else '—'}
-            &nbsp;·&nbsp; CIN: {sel_rec.get('cin','—')[:25]}
+        <div style="border-left:3px solid {border};background:{bg};
+                    padding:8px 12px;border-radius:0 3px 3px 0;
+                    margin-bottom:6px;">
+          <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;
+                      margin-bottom:4px;">
+            <span style="font-size:9px;font-weight:700;color:{src_col};
+                         letter-spacing:.08em;background:#0a0a0a;
+                         padding:1px 6px;border-radius:2px;">{src_lbl}</span>
+            <span style="font-size:11px;color:#546e7a;">{item.get('date','')[:10]}</span>
+            {f'<span style="font-size:11px;font-weight:700;color:#ffcc80;">{amt_str}</span>' if amt_str else ""}
+            {client_badge}
           </div>
-          {"<div style='font-size:11px;color:#263238;margin-top:4px;'>Trigger: " + sel_rec.get('event_flag','')[:120] + "</div>" if sel_rec.get('event_flag') else ""}
+          <div style="font-size:13px;font-weight:500;color:#eceff1;
+                      margin-bottom:3px;line-height:1.4;">
+            {item.get('company','')[:120]}
+          </div>
+          {f'<div style="font-size:11px;color:#607d8b;margin-bottom:3px;">{item.get("detail","")[:160]}</div>' if item.get('detail') else ""}
+          <div style="font-size:11px;color:#5c9bd6;border-left:2px solid #1565c0;
+                      padding-left:6px;margin-top:4px;">
+            <span style="font-size:8px;font-weight:700;color:#1565c0;
+                         letter-spacing:.07em;margin-right:4px;">FX ▶</span>
+            {item.get('fx_angle','')[:160]}
+          </div>
+          <div style="margin-top:5px;">
+            <a href="{item.get('url','#')}" target="_blank"
+               style="font-size:10px;color:#263238;text-decoration:none;">
+               ↗ Source
+            </a>
+          </div>
         </div>
         """, unsafe_allow_html=True)
 
-    if run_btn and sel_rec:
-        if not GROQ_API_KEY:
-            st.error("GROQ_API_KEY required for deep dive.")
-        else:
-            with st.spinner(f"Searching 12 months for {sub}..."):
-                result = run_deep_dive(grp, sub, exp)
+    # ── ECB SCAN ─────────────────────────────────────────────────────────────
+    with ri_ecb:
+        st.markdown("""
+        <div style="background:#0a0800;border:1px solid #3e2000;border-radius:6px;
+                    padding:10px 14px;margin-bottom:14px;">
+          <div style="font-size:11px;font-weight:700;color:#ff6600;
+                      letter-spacing:.07em;">RBI EXTERNAL COMMERCIAL BORROWINGS</div>
+          <div style="font-size:11px;color:#546e7a;margin-top:3px;">
+            Monthly XLSX · rbi.org.in · Mandatory disclosure for all ECBs ≥ $750K ·
+            Fuzzy-matched vs 390 clients
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
 
-            st.caption(
-                f"**{result['query_count']} headlines** · "
-                f"**{len(result['events'])} significant events** · "
-                f"{result['searched_at']}"
-            )
+        ecb_col1, ecb_col2 = st.columns([4, 1])
+        with ecb_col2:
+            n_months_ecb = st.selectbox("Months", [1, 2, 3, 6], index=2, key="ecb_months")
+            run_ecb = st.button("↻ Refresh", key="ecb_refresh", use_container_width=True)
 
-            if not result["events"]:
-                st.info("No significant INR-relevant events found.")
+        if run_ecb:
+            st.cache_data.clear()
+
+        with st.spinner("Fetching RBI ECB data..."):
+            ecb_data = scan_ecb(registry, n_months=n_months_ecb)
+
+        if ecb_data.get("error"):
+            st.warning(f"⚠️ {ecb_data['error']}")
+
+        # Stats bar
+        matched_ecb   = ecb_data.get("matched", [])
+        prospects_ecb = ecb_data.get("prospects", [])
+        total_ecb     = len(ecb_data.get("results", []))
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total ECBs", total_ecb)
+        m2.metric("Client Matches", len(matched_ecb))
+        m3.metric("Prospects", len(prospects_ecb))
+        m4.metric("Months", ecb_data.get("months_covered", 0))
+
+        st.divider()
+
+        ecb_tab_a, ecb_tab_b = st.tabs(["🏦 Client Matches", "🔭 Prospects"])
+
+        with ecb_tab_a:
+            if not matched_ecb:
+                st.info("No ECBs matched to your 390 clients in this period.")
             else:
-                m1,m2,m3 = st.columns(3)
-                with m1: st.metric("Events", len(result["events"]))
-                with m2: st.metric("High",
-                    sum(1 for e in result["events"] if e.get("significance")=="High"))
-                with m3:
-                    dates = [e.get("date","") for e in result["events"] if e.get("date")]
-                    if dates: st.metric("Range",
-                        f"{min(dates)[:7]} → {max(dates)[:7]}")
+                st.caption(f"{len(matched_ecb)} ECBs matched to SCB clients")
+                for item in sorted(matched_ecb,
+                                   key=lambda x: x.get("amount_usd_m") or 0,
+                                   reverse=True):
+                    _reg_card(item)
 
-                st.divider()
-                for ev in result["events"]:
-                    sig = (ev.get("significance") or "Low").strip().capitalize()
-                    if sig not in ("High","Medium","Low"):
-                        sig = "Low"
-                    css = {"High":"dd-high","Medium":"dd-medium","Low":"dd-low"}.get(sig,"dd-low")
-                    sc  = {"High":"#ef5350","Medium":"#ff6d00","Low":"#555"}.get(sig,"#555")
-                    ev_link = ev.get("source_url","") or (
-                        f"https://news.google.com/search?q="
-                        f"{urllib.parse.quote_plus(ev.get('headline','')[:60])}"
-                        f"&hl=en-IN&gl=IN")
-                    nice_d, rel_d = format_date((ev.get("date") or "")[:10])
-                    st.markdown(f"""
-                    <div class="dd-event {css}">
-                      <div style="font-size:13px;color:{sc};margin-bottom:2px;">
-                        <strong>{nice_d}</strong>
-                        {f'<span style="font-size:11px;color:#546e7a;"> · {rel_d}</span>' if rel_d else ""}
-                        &nbsp;·&nbsp;
-                        <span style="font-weight:700;">{sig.upper()}</span>
-                        &nbsp;·&nbsp;
-                        <span style="background:#1a2d3d;color:#90caf9;font-size:10px;
-                                     font-weight:600;padding:1px 7px;border-radius:999px;">
-                          {ev.get('action_type','Other')}
-                        </span>
-                        {"&nbsp;·&nbsp;<span style='color:#ffcc80;font-size:11px;'>" + ev['counterparty'] + "</span>" if ev.get('counterparty') else ""}
-                      </div>
-                      <div style="font-size:14px;font-weight:500;color:#eceff1;
-                                  margin:5px 0 4px;line-height:1.45;">
-                        {ev.get('headline','')}
-                      </div>
-                      {"<div style='font-size:12px;color:#90caf9;'>FX → " + ev['fx_implication'] + "</div>" if ev.get('fx_implication') else ""}
-                      <div style="margin-top:6px;">
-                        <a href="{ev_link}" target="_blank"
-                           style="font-size:11px;color:#37474f;text-decoration:none;">
-                           📰 Read source →
-                        </a>
-                      </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+        with ecb_tab_b:
+            st.caption(
+                f"{len(prospects_ecb)} unmatched ECBs ≥ $5M in MNC sectors "
+                f"— potential new clients"
+            )
+            if not prospects_ecb:
+                st.info("No high-value unmatched ECBs found.")
+            else:
+                for item in prospects_ecb:
+                    _reg_card(item, show_match=False)
 
-            with st.expander(f"Raw headlines ({result['query_count']})", expanded=False):
-                for h in sorted(result["headlines"],
-                                key=lambda x: x.get("date",""), reverse=True)[:40]:
-                    glink = (f"https://news.google.com/search?q="
-                             f"{urllib.parse.quote_plus(h['title'][:60])}&hl=en-IN&gl=IN")
-                    actual = h.get("url","")
-                    link   = actual if actual.startswith("http") else glink
-                    st.markdown(
-                        f'<div style="font-size:12px;color:#37474f;padding:3px 0;">'
-                        f'<strong style="color:#546e7a;">{h["date"]}</strong>'
-                        f'&nbsp; {h["title"]}'
-                        f'&nbsp;<a href="{link}" target="_blank" '
-                        f'style="color:#263238;font-size:11px;">→</a>'
-                        f'</div>', unsafe_allow_html=True)
+    # ── CCI FILINGS ──────────────────────────────────────────────────────────
+    with ri_cci:
+        st.markdown("""
+        <div style="background:#0a000f;border:1px solid #4a1a6a;border-radius:6px;
+                    padding:10px 14px;margin-bottom:14px;">
+          <div style="font-size:11px;font-weight:700;color:#e040fb;
+                      letter-spacing:.07em;">CCI COMBINATION ORDERS</div>
+          <div style="font-size:11px;color:#546e7a;margin-top:3px;">
+            cci.gov.in · M&A filings above CCI threshold · Pre-news signal —
+            deals filed 30–150 days before public announcement
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        cci_col1, cci_col2 = st.columns([4, 1])
+        with cci_col2:
+            run_cci = st.button("↻ Refresh", key="cci_refresh", use_container_width=True)
+        if run_cci:
+            st.cache_data.clear()
+
+        with st.spinner("Fetching CCI filings..."):
+            cci_data = scan_cci(registry)
+
+        if cci_data.get("error"):
+            st.warning(f"⚠️ {cci_data['error']}")
+
+        matched_cci = cci_data.get("matched", [])
+        all_cci     = cci_data.get("results", [])
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Orders", cci_data.get("total", 0))
+        c2.metric("Client Matches", len(matched_cci))
+        c3.metric("Fetched", cci_data.get("fetch_date", "—"))
+
+        st.divider()
+
+        cci_tab_a, cci_tab_b = st.tabs(["🏦 Client Matches", "📋 All Filings"])
+
+        with cci_tab_a:
+            if not matched_cci:
+                st.info("No CCI orders matched to your 390 clients.")
+            else:
+                for item in matched_cci:
+                    _reg_card(item)
+
+        with cci_tab_b:
+            st.caption(f"Latest {len(all_cci)} CCI combination orders")
+            for item in all_cci:
+                _reg_card(item)
+
+    # ── SEBI OPEN OFFERS ─────────────────────────────────────────────────────
+    with ri_sebi:
+        st.markdown("""
+        <div style="background:#000d14;border:1px solid #004d6e;border-radius:6px;
+                    padding:10px 14px;margin-bottom:14px;">
+          <div style="font-size:11px;font-weight:700;color:#29b6f6;
+                      letter-spacing:.07em;">SEBI OPEN OFFERS / TAKEOVERS</div>
+          <div style="font-size:11px;color:#546e7a;margin-top:3px;">
+            sebi.gov.in · SAST Regulations · Triggered when acquirer crosses 25% stake ·
+            Mandatory 26% public offer
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        sebi_col1, sebi_col2 = st.columns([4, 1])
+        with sebi_col2:
+            run_sebi = st.button("↻ Refresh", key="sebi_refresh", use_container_width=True)
+        if run_sebi:
+            st.cache_data.clear()
+
+        with st.spinner("Fetching SEBI open offers..."):
+            sebi_data = scan_sebi_offers(registry)
+
+        if sebi_data.get("error"):
+            st.warning(f"⚠️ {sebi_data['error']}")
+
+        matched_sebi = sebi_data.get("matched", [])
+        all_sebi     = sebi_data.get("results", [])
+
+        s1, s2, s3 = st.columns(3)
+        s1.metric("Total Offers", sebi_data.get("total", 0))
+        s2.metric("Client Matches", len(matched_sebi))
+        s3.metric("Source", sebi_data.get("source_used", "SEBI"))
+
+        st.divider()
+
+        sebi_tab_a, sebi_tab_b = st.tabs(["🏦 Client Matches", "📋 All Offers"])
+
+        with sebi_tab_a:
+            if not matched_sebi:
+                st.info("No open offers matched to your 390 clients.")
+            else:
+                for item in matched_sebi:
+                    _reg_card(item)
+
+        with sebi_tab_b:
+            st.caption(f"Latest {len(all_sebi)} SEBI open offers")
+            for item in all_sebi:
+                _reg_card(item)
+
+    # ── CLIENT DEEP DIVE (unchanged) ─────────────────────────────────────────
+    with ri_dive:
+        st.markdown("""
+        <div style="background:#0a1628;border:1px solid #1e3a5f;border-radius:10px;
+                    padding:14px 18px;margin-bottom:18px;">
+          <strong style="color:#64b5f6;">Client Deep Dive</strong>
+          <div style="font-size:12px;color:#546e7a;margin-top:4px;">
+            12 months · Google News + ET + BS + Moneycontrol · Groq extracts
+            INR-relevant events only
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        options = [
+            (f"{r['indian_subsidiary']}  ({r['client_group']})", r)
+            for r in sorted(registry["all"],
+                            key=lambda x: x.get("priority_score",0), reverse=True)
+            if r.get("indian_subsidiary")
+        ]
+
+        dc1, dc2 = st.columns([3,1])
+        with dc1:
+            sel_label = st.selectbox("Select client", [o[0] for o in options])
+        with dc2:
+            run_btn = st.button("🔍 Search 12 months", use_container_width=True, type="primary")
+
+        sel_rec = next((r for l,r in options if l==sel_label), None)
+
+        if sel_rec:
+            sub  = sel_rec["indian_subsidiary"]
+            grp  = sel_rec["client_group"]
+            exp  = sel_rec.get("net_nih_exposure",0) or 0
+            tier = sel_rec.get("priority_tier","")
+            st.markdown(f"""
+            <div style="border:1px solid #1e3a5f;border-radius:8px;
+                        padding:12px 16px;margin-bottom:16px;background:#06111a;">
+              <div style="font-size:14px;font-weight:500;color:#eceff1;">{sub}</div>
+              <div style="font-size:12px;color:#64b5f6;">{grp}</div>
+              <div style="font-size:11px;color:#37474f;margin-top:4px;">
+                NIH: <strong style="color:#a5d6a7;">${exp:,.0f}M</strong>
+                &nbsp;·&nbsp; {tier[:25] if tier else '—'}
+                &nbsp;·&nbsp; CIN: {sel_rec.get('cin','—')[:25]}
+              </div>
+              {"<div style='font-size:11px;color:#263238;margin-top:4px;'>Trigger: " + sel_rec.get('event_flag','')[:120] + "</div>" if sel_rec.get('event_flag') else ""}
+            </div>
+            """, unsafe_allow_html=True)
+
+        if run_btn and sel_rec:
+            if not GROQ_API_KEY:
+                st.error("GROQ_API_KEY required for deep dive.")
+            else:
+                with st.spinner(f"Searching 12 months for {sub}..."):
+                    result = run_deep_dive(grp, sub, exp)
+
+                st.caption(
+                    f"**{result['query_count']} headlines** · "
+                    f"**{len(result['events'])} significant events** · "
+                    f"{result['searched_at']}"
+                )
+
+                if not result["events"]:
+                    st.info("No significant INR-relevant events found.")
+                else:
+                    m1,m2,m3 = st.columns(3)
+                    with m1: st.metric("Events", len(result["events"]))
+                    with m2: st.metric("High",
+                        sum(1 for e in result["events"] if e.get("significance")=="High"))
+                    with m3:
+                        dates = [e.get("date","") for e in result["events"] if e.get("date")]
+                        if dates: st.metric("Range",
+                            f"{min(dates)[:7]} → {max(dates)[:7]}")
+
+                    st.divider()
+                    for ev in result["events"]:
+                        sig = (ev.get("significance") or "Low").strip().capitalize()
+                        if sig not in ("High","Medium","Low"):
+                            sig = "Low"
+                        css = {"High":"dd-high","Medium":"dd-medium","Low":"dd-low"}.get(sig,"dd-low")
+                        sc  = {"High":"#ef5350","Medium":"#ff6d00","Low":"#555"}.get(sig,"#555")
+                        ev_link = ev.get("source_url","") or (
+                            f"https://news.google.com/search?q="
+                            f"{urllib.parse.quote_plus(ev.get('headline','')[:60])}"
+                            f"&hl=en-IN&gl=IN")
+                        nice_d, rel_d = format_date((ev.get("date") or "")[:10])
+                        st.markdown(f"""
+                        <div class="dd-event {css}">
+                          <div style="font-size:13px;color:{sc};margin-bottom:2px;">
+                            <strong>{nice_d}</strong>
+                            {f'<span style="font-size:11px;color:#546e7a;"> · {rel_d}</span>' if rel_d else ""}
+                            &nbsp;·&nbsp;
+                            <span style="font-weight:700;">{sig.upper()}</span>
+                            &nbsp;·&nbsp;
+                            <span style="background:#1a2d3d;color:#90caf9;font-size:10px;
+                                         font-weight:600;padding:1px 7px;border-radius:999px;">
+                              {ev.get('action_type','Other')}
+                            </span>
+                            {"&nbsp;·&nbsp;<span style='color:#ffcc80;font-size:11px;'>" + ev['counterparty'] + "</span>" if ev.get('counterparty') else ""}
+                          </div>
+                          <div style="font-size:14px;font-weight:500;color:#eceff1;
+                                      margin:5px 0 4px;line-height:1.45;">
+                            {ev.get('headline','')}
+                          </div>
+                          {"<div style='font-size:12px;color:#90caf9;'>FX → " + ev['fx_implication'] + "</div>" if ev.get('fx_implication') else ""}
+                          <div style="margin-top:6px;">
+                            <a href="{ev_link}" target="_blank"
+                               style="font-size:11px;color:#37474f;text-decoration:none;">
+                               📰 Read source →
+                            </a>
+                          </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                with st.expander(f"Raw headlines ({result['query_count']})", expanded=False):
+                    for h in sorted(result["headlines"],
+                                    key=lambda x: x.get("date",""), reverse=True)[:40]:
+                        glink = (f"https://news.google.com/search?q="
+                                 f"{urllib.parse.quote_plus(h['title'][:60])}&hl=en-IN&gl=IN")
+                        actual = h.get("url","")
+                        link   = actual if actual.startswith("http") else glink
+                        st.markdown(
+                            f'<div style="font-size:12px;color:#37474f;padding:3px 0;">'
+                            f'<strong style="color:#546e7a;">{h["date"]}</strong>'
+                            f'&nbsp; {h["title"]}'
+                            f'&nbsp;<a href="{link}" target="_blank" '
+                            f'style="color:#263238;font-size:11px;">→</a>'
+                            f'</div>', unsafe_allow_html=True)
 
