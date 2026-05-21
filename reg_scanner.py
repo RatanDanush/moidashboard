@@ -59,18 +59,31 @@ def _normalize(name: str) -> str:
 
 # Generic industry words — must NOT drive matches alone
 _GENERIC_TOKENS = {
-    "power", "energy", "infrastructure", "services", "service",
-    "solutions", "solution", "technology", "technologies", "digital",
-    "systems", "system", "pharma", "pharmaceutical", "pharmaceuticals",
-    "foods", "food", "industries", "industry", "industrial",
-    "manufacturing", "construction", "transport", "transportation",
-    "aviation", "engineering", "management", "chemicals", "chemical",
-    "materials", "material", "products", "product", "healthcare",
-    "health", "medical", "renewable", "renewables", "solar",
-    "distribution", "logistics", "ventures", "enterprise", "enterprises",
-    "national", "international", "global", "bank", "banking",
+    # Tech / IT
+    "technology", "technologies", "digital", "systems", "system",
+    "electronics", "electric", "electrical", "automation",
+    # Energy / Infra
+    "power", "energy", "infrastructure", "renewable", "renewables",
+    "solar", "wind", "transmission", "generation", "utilities",
+    # Industrial / Manufacturing
+    "industries", "industry", "industrial", "manufacturing", "automotive",
+    "auto", "chemicals", "chemical", "materials", "material", "cement",
+    "construction", "engineering", "rubber", "plastics", "plastic",
+    "textile", "textiles", "apparel", "cables", "cable", "wire",
+    # Services / Finance
+    "services", "service", "solutions", "solution", "management",
     "financial", "finance", "capital", "investment", "investments",
-    "transmission", "generation", "sourcing", "processing",
+    "banking", "bank", "insurance",
+    # Consumer / Retail
+    "foods", "food", "water", "beverages", "retail", "consumer",
+    "healthcare", "health", "medical", "pharma", "pharmaceutical",
+    "pharmaceuticals",
+    # General
+    "products", "product", "distribution", "logistics", "sourcing",
+    "processing", "transport", "transportation", "aviation",
+    "ventures", "enterprise", "enterprises",
+    "national", "international", "global",
+    "construction", "development",
 }
 
 
@@ -212,6 +225,12 @@ def _parse_ecb_xlsx(xlsx_bytes: bytes) -> list[dict]:
                     raw_b = raw_b.iloc[0]
                 borrower = str(raw_b).strip()
                 if not borrower or borrower.lower() in ("nan", "borrower", ""):
+                    continue
+                # Skip RBI section headers / total rows
+                b_low = borrower.lower().strip()
+                if (b_low.startswith(("total", "i ", "ii ", "iii ", "iv ", "sl.", "sr.", "s.no"))
+                        or re.match(r'^[ivx]+[.\s]', b_low)
+                        or len(borrower) < 8):
                     continue
                 try:
                     amt = float(str(r.get("amount_usd", 0)).replace(",", ""))
